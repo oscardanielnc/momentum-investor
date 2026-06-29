@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>investor · Mi Patrimonio</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0a0e14; --card:#141a23; --card2:#1b2430; --line:#232c3a;
+    --tx:#e6edf3; --muted:#8b98a8; --green:#3fb950; --red:#f85149; --amber:#d29922;
+    --semis:#6ea8fe; --salud:#3fb950; --energia:#d29922; --finanzas:#a371f7;
+    --consumo:#f778ba; --software:#56d4dd; --comm:#ff9f6e;
+    --accent:#6ea8fe;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-serif;
+       font-size:14px;line-height:1.5;padding:20px;max-width:1400px;margin:0 auto}
+  h1{font-size:22px;font-weight:600} h2{font-size:14px;color:var(--muted);font-weight:600;
+     text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px}
+  .muted{color:var(--muted)} .green{color:var(--green)} .red{color:var(--red)}
+  .header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px}
+  .pill{display:inline-flex;align-items:center;gap:6px;background:var(--card2);border:1px solid var(--line);
+        border-radius:20px;padding:5px 12px;font-size:12px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
+  .grid{display:grid;gap:16px}
+  .kpis{grid-template-columns:repeat(4,1fr)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px}
+  .kpi .big{font-size:26px;font-weight:700;margin-top:4px}
+  .kpi .sub{font-size:12px;margin-top:2px}
+  .main{grid-template-columns:2fr 1fr;margin-top:16px}
+  .row2{grid-template-columns:1fr 1fr;margin-top:16px}
+  .row3{grid-template-columns:1.4fr 1fr;margin-top:16px}
+  /* drawdown gauge */
+  .gauge{height:10px;background:var(--card2);border-radius:6px;overflow:hidden;margin-top:10px}
+  .gauge>div{height:100%;border-radius:6px;background:linear-gradient(90deg,var(--green),var(--amber),var(--red))}
+  /* positions */
+  .pos{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--line)}
+  .pos:last-child{border-bottom:none}
+  .tkr{display:flex;align-items:center;gap:10px}
+  .tag{font-size:10px;padding:2px 8px;border-radius:20px;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+  .sym{font-weight:700;font-size:15px}
+  .ts{font-size:10px;color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:1px 6px}
+  .bar{height:6px;border-radius:4px;background:var(--card2);width:90px;overflow:hidden}
+  .bar>div{height:100%;background:var(--accent)}
+  /* timeline */
+  .tl{position:relative;padding-left:18px}
+  .tl::before{content:'';position:absolute;left:5px;top:4px;bottom:4px;width:2px;background:var(--line)}
+  .tl-item{position:relative;padding:0 0 16px 0}
+  .tl-item::before{content:'';position:absolute;left:-16px;top:5px;width:10px;height:10px;border-radius:50%;
+    background:var(--accent);border:2px solid var(--bg)}
+  .just{background:var(--card2);border-radius:10px;padding:14px;font-size:13px;margin-top:8px}
+  .just table{width:100%;border-collapse:collapse;margin-top:8px;font-size:12px}
+  .just td,.just th{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line)}
+  .review{display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}
+  .sev{font-size:10px;padding:1px 7px;border-radius:20px;font-weight:600}
+  .footnote{color:var(--muted);font-size:11px;margin-top:8px}
+  @media(max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}.main,.row2,.row3{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>💼 Mi Patrimonio <span class="muted" style="font-size:14px">· investor</span></h1>
+    <div class="muted" style="font-size:12px">Estrategia agresiva multi-sector · top-5 momentum · trailing 20%</div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <span class="pill"><span class="dot"></span> Robot activo</span>
+    <span class="pill muted">PAPER · últ. latido 14:55</span>
+  </div>
+</div>
+
+<!-- KPIs -->
+<div class="grid kpis">
+  <div class="card kpi"><div class="muted">Patrimonio (Alpaca)</div>
+    <div class="big">$104,070</div><div class="sub green">▲ $1,892 hoy (+1.85%)</div></div>
+  <div class="card kpi"><div class="muted">Rendimiento (TWR)</div>
+    <div class="big green">+18.4%</div><div class="sub muted">aportes $5,400 · mercado $X</div></div>
+  <div class="card kpi"><div class="muted">Drawdown actual</div>
+    <div class="big">−4.1%</div>
+    <div class="gauge"><div style="width:14%"></div></div>
+    <div class="sub muted">tope −30% · margen 25.9pp</div></div>
+  <div class="card kpi"><div class="muted">Diversificación</div>
+    <div class="big">2 <span style="font-size:14px" class="muted">sectores</span></div>
+    <div class="sub muted">semis · salud</div></div>
+</div>
+
+<!-- equity + cartera -->
+<div class="grid main">
+  <div class="card">
+    <h2>📈 Curva de patrimonio</h2>
+    <canvas id="equity" height="120"></canvas>
+    <div class="footnote">Línea = equity MTM · banda roja = límite −30% desde el pico</div>
+  </div>
+  <div class="card">
+    <h2>🎯 Cartera (top-5)</h2>
+    <div id="positions"></div>
+    <div class="footnote">Cada posición con trailing stop 20% · equiponderado</div>
+  </div>
+</div>
+
+<!-- diversificación + justificación -->
+<div class="grid row3">
+  <div class="card">
+    <h2>🧠 Por qué esta cartera (último cambio)</h2>
+    <div class="just">
+      <b>🔄 Redistribución 2026-06-29</b> — top-5 momentum · 2 sectores (salud, semis) · trailing 20% · sin caja
+      <table>
+        <tr><th>Activo</th><th>Sector</th><th>Peso</th><th>Por qué</th></tr>
+        <tr><td><b>AMD</b></td><td>semis</td><td>20%</td><td>#1 de 36 · score 5.6 · +168% 3m</td></tr>
+        <tr><td><b>INTC</b></td><td>semis</td><td>20%</td><td>#2 · score 5.3 · +209% 3m</td></tr>
+        <tr><td><b>UNH</b></td><td>salud</td><td>20%</td><td>#3 · score 4.7 · +61% 3m</td></tr>
+        <tr><td><b>STX</b></td><td>semis</td><td>20%</td><td>#4 · score 4.3 · +162% 3m</td></tr>
+        <tr><td><b>MRVL</b></td><td>semis</td><td>20%</td><td>#5 · score 4.0 · +206% 3m</td></tr>
+      </table>
+      <div class="footnote">Próximo en la fila: MU (semis, score 3.5) — entra si supera a un líder.</div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>🍩 Sectores en cartera</h2>
+    <canvas id="donut" height="180"></canvas>
+  </div>
+</div>
+
+<!-- historial + salud -->
+<div class="grid row2">
+  <div class="card">
+    <h2>🕑 Historial de redistribuciones</h2>
+    <div class="tl">
+      <div class="tl-item"><b>29 jun · 14:30</b> <span class="muted">— rotación: UNH y MRVL entran</span>
+        <div class="muted" style="font-size:12px">Salud sube al top-5; salen posiciones con menos momentum.</div></div>
+      <div class="tl-item"><b>01 jun · 09:35</b> <span class="muted">— rebalanceo mensual</span>
+        <div class="muted" style="font-size:12px">Top-5: AMD, INTC, STX, NVDA, AVGO.</div></div>
+      <div class="tl-item"><b>28 may · 11:10</b> <span class="muted">— stop activado en NVDA</span>
+        <div class="muted" style="font-size:12px">Cayó 20% desde su pico → vendida a tiempo.</div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>🩺 Salud del sistema · señales a revisar</h2>
+    <div class="review"><span class="sev" style="background:#3b2a13;color:var(--amber)">WATCH</span>
+      <span>Spread alto en MRVL (38 bps) al rebalancear</span></div>
+    <div class="review"><span class="sev" style="background:#13241a;color:var(--green)">INFO</span>
+      <span>Trailing stops colocados: 5/5</span></div>
+    <div class="review"><span class="sev" style="background:#13241a;color:var(--green)">OK</span>
+      <span>Heartbeat cada 15 min · sin errores abiertos</span></div>
+    <div class="footnote">El robot marca aquí lo raro; tú lo revisas.</div>
+  </div>
+</div>
+
+<script>
+const SC={semis:'#6ea8fe',salud:'#3fb950',energia:'#d29922',finanzas:'#a371f7',consumo:'#f778ba',software:'#56d4dd',comm:'#ff9f6e'};
+const POS=[
+ {s:'AMD',sec:'semis',w:20,pnl:'+4.1%'},{s:'INTC',sec:'semis',w:20,pnl:'+2.7%'},
+ {s:'UNH',sec:'salud',w:20,pnl:'+0.9%'},{s:'STX',sec:'semis',w:20,pnl:'+3.3%'},
+ {s:'MRVL',sec:'semis',w:20,pnl:'−1.2%'}];
+document.getElementById('positions').innerHTML=POS.map(p=>`
+ <div class="pos">
+   <div class="tkr"><span class="sym">${p.s}</span>
+     <span class="tag" style="background:${SC[p.sec]}22;color:${SC[p.sec]}">${p.sec}</span></div>
+   <div style="text-align:right">
+     <div class="${p.pnl[0]==='+'?'green':'red'}" style="font-weight:600">${p.pnl}</div>
+     <div style="display:flex;gap:8px;align-items:center;margin-top:3px">
+       <span class="ts">🛡️ stop 20%</span>
+       <div class="bar"><div style="width:${p.w*4}%"></div></div><span class="muted">${p.w}%</span></div>
+   </div>
+ </div>`).join('');
+
+new Chart(document.getElementById('equity'),{type:'line',
+ data:{labels:['Ene','Feb','Mar','Abr','May','Jun'],
+  datasets:[{data:[5000,5600,6100,5800,7400,8920],borderColor:'#6ea8fe',
+   backgroundColor:'rgba(110,168,254,.12)',fill:true,tension:.35,pointRadius:0,borderWidth:2}]},
+ options:{plugins:{legend:{display:false}},scales:{
+   y:{grid:{color:'#1b2430'},ticks:{color:'#8b98a8',callback:v=>'$'+v}},
+   x:{grid:{display:false},ticks:{color:'#8b98a8'}}}}});
+
+new Chart(document.getElementById('donut'),{type:'doughnut',
+ data:{labels:['semis','salud'],datasets:[{data:[80,20],
+   backgroundColor:['#6ea8fe','#3fb950'],borderColor:'#141a23',borderWidth:3}]},
+ options:{cutout:'68%',plugins:{legend:{position:'bottom',labels:{color:'#e6edf3',padding:14}}}}});
+</script>
+</body>
+</html>

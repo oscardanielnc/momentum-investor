@@ -1,0 +1,37 @@
+# ───────── SECRETOS Y ESTADO REAL — NUNCA subir ─────────
+.env
+.env.local
+*.key
+*.pem
+
+# Base de datos / estado vivo del robot (montos reales, posiciones, logs)
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+
+# Datos de mercado descargados (grandes, regenerables)
+research/data_db/
+*.parquet
+
+# Logs y temporales
+*.log
+dashboard/_server.log
+research/_*.txt
+*.lock
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
