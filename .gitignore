@@ -4,6 +4,9 @@
 *.key
 *.pem
 
+# Documentos internos de sesión (bitácora, decisiones, estado privado)
+private/
+
 # Base de datos / estado vivo del robot (montos reales, posiciones, logs)
 data/
 *.db
