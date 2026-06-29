@@ -30,7 +30,7 @@ from db import DB
 HEARTBEAT_S = int(os.environ.get("INVESTOR_HEARTBEAT_S", "900"))   # 15 min
 CB_HALT   = float(os.environ.get("INVESTOR_CB_HALT", "0.25"))      # flatten si dd ≤ −25%
 CB_RESUME = float(os.environ.get("INVESTOR_CB_RESUME", "0.15"))    # reanuda al recuperar a −15%
-_LOCK = r"D:\OSCAR\Documents\Trading Proyects\investor\data\orchestrator.lock"
+_LOCK = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "orchestrator.lock")
 
 
 def _now():
