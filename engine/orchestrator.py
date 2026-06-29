@@ -37,12 +37,29 @@ def _now():
     return datetime.now(timezone.utc)
 
 # ── Lock de instancia única ──────────────────────────────────────────────────
+def _pid_alive(pid):
+    """¿El proceso `pid` sigue vivo? (robusto a systemd restarts y SIGTERM sin atexit)."""
+    try:
+        os.kill(pid, 0)            # señal 0 = solo comprobar existencia
+    except ProcessLookupError:
+        return False               # no existe → lock huérfano
+    except PermissionError:
+        return True                # existe (otro dueño)
+    except Exception:
+        return True                # no se puede saber → conservador
+    return True
+
+
 def acquire_lock():
     os.makedirs(os.path.dirname(_LOCK), exist_ok=True)
     if os.path.exists(_LOCK):
-        age = time.time() - os.path.getmtime(_LOCK)
-        if age < HEARTBEAT_S * 3:    # lock fresco → otra instancia viva
-            raise RuntimeError(f"Otra instancia activa (lock de {age:.0f}s). Aborto.")
+        try:
+            old = int(open(_LOCK).read().strip())
+        except Exception:
+            old = None
+        if old and old != os.getpid() and _pid_alive(old):
+            raise RuntimeError(f"Otra instancia activa (PID {old}). Aborto.")
+        # lock huérfano (proceso muerto, p.ej. tras un restart de systemd) → lo reclamo
     with open(_LOCK, "w") as f:
         f.write(str(os.getpid()))
     atexit.register(lambda: os.path.exists(_LOCK) and os.remove(_LOCK))
