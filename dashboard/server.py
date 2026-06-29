@@ -9,6 +9,8 @@ import os, sys
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+PORT = int(os.environ.get("INVESTOR_DASHBOARD_PORT", "8080"))   # 8080 por defecto (VM)
+
 # El dashboard lee la cuenta PAPER por defecto (Oscar cambia a real con env).
 os.environ.setdefault("INVESTOR_DRY_RUN", "false")
 os.environ.setdefault("INVESTOR_ALPACA_LIVE", "false")
@@ -160,8 +162,8 @@ if __name__ == "__main__":
         lan = "<IP-de-tu-PC>"
     print("=" * 56)
     print("  Dashboard 'Mi Patrimonio'  ·  Ctrl+C para parar")
-    print(f"  En esta PC:     http://127.0.0.1:8000")
-    print(f"  En tu celular:  http://{lan}:8000   (mismo WiFi)")
+    print(f"  Local:    http://127.0.0.1:{PORT}")
+    print(f"  Red/VM:   http://{lan}:{PORT}")
     print("=" * 56)
-    # 0.0.0.0 = accesible desde la red LOCAL (tu celular en el mismo WiFi). NO expuesto a internet.
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+    # 0.0.0.0 = accesible desde la red local / la IP pública de la VM. Protege el puerto con firewall.
+    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="warning")
