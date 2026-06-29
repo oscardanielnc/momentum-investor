@@ -150,7 +150,7 @@ def health():
 
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(HERE, "index.html"))
+    return FileResponse(os.path.join(HERE, "index.html"), headers={"Cache-Control": "no-store"})
 
 
 if __name__ == "__main__":
