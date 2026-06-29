@@ -18,8 +18,9 @@ from __future__ import annotations
 import json, os, sqlite3, traceback as _tb
 from datetime import datetime, timezone
 
-_DEF_DB = r"D:\OSCAR\Documents\Trading Proyects\investor\data\investor.db"
-_SCHEMA = r"D:\OSCAR\Documents\Trading Proyects\investor\db\schema.sql"
+_PROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # engine/ → raíz del proyecto
+_DEF_DB = os.path.join(_PROOT, "data", "investor.db")                  # portable (Windows / Linux / VM)
+_SCHEMA = os.path.join(_PROOT, "db", "schema.sql")
 
 def _now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
