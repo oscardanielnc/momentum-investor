@@ -1,0 +1,18 @@
+[Unit]
+Description=investor — dashboard "Mi Patrimonio" (FastAPI, puerto 8080)
+After=network-online.target investor-robot.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/investor-app/momentum-investor
+EnvironmentFile=/etc/investor.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/investor-app/venv/bin/python dashboard/server.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
