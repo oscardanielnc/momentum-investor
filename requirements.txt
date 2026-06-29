@@ -1,0 +1,13 @@
+# investor — dependencias de ejecución (robot + dashboard)
+requests>=2.31
+numpy>=1.26
+pandas>=2.0
+fastapi>=0.110
+uvicorn>=0.29
+
+# Justificación en prosa con Claude (opcional; DeepSeek/GLM van por REST y no necesitan paquete)
+# anthropic>=0.40
+
+# Solo para investigación/backtests (no necesario en la VM de producción)
+# databento>=0.40
+# pyarrow>=15
