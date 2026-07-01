@@ -96,6 +96,13 @@ def market_open():
     d = _req("GET", "/v2/clock")
     return bool(d.get("is_open")) if isinstance(d, dict) else False
 
+def list_orders(limit=100, status="all"):
+    """Órdenes recientes de Alpaca (para persistir trazabilidad en order_log). [] en DRY_RUN."""
+    if DRY_RUN:
+        return []
+    d = _req("GET", f"/v2/orders?status={status}&limit={int(limit)}&direction=desc&nested=true")
+    return d if isinstance(d, list) else []
+
 # ─── Órdenes ────────────────────────────────────────────────────────────────
 def _coid(tag, symbol):
     return f"inv-{tag}-{symbol}-{int(time.time())}"[:48]
