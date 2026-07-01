@@ -110,6 +110,31 @@ def place_trailing_stops(d: DB):
     return n
 
 
+def persist_traceability(d: DB, rb_id):
+    """Trazabilidad completa: vuelca las órdenes 'inv-*' de Alpaca a order_log (idempotente por
+    client_order_id) + snapshotea las posiciones vivas. Blindado: nunca tumba el ciclo."""
+    if ex.DRY_RUN:
+        return
+    try:
+        mode = ex.mode_str()
+        for o in ex.list_orders(limit=50):
+            coid = o.get("client_order_id", "")
+            if not coid.startswith("inv-"):      # solo lo que colocó este robot
+                continue
+            st = (o.get("status") or "new").upper()
+            qty = float(o.get("qty") or o.get("filled_qty") or 0)
+            d.record_order(coid, o["symbol"], o["side"], o["type"], qty, mode,
+                           rebalance_id=rb_id, price=o.get("limit_price"),
+                           status=st, exchange_order_id=o.get("id"), raw=o)   # INSERT OR IGNORE
+            d.update_order(coid, st,
+                           filled_qty=(float(o["filled_qty"]) if o.get("filled_qty") else None),
+                           avg_fill_price=(float(o["filled_avg_price"]) if o.get("filled_avg_price") else None))
+        d.snapshot_positions({s: {"qty": p["qty"], "avg": p["avg"]}
+                              for s, p in ex.get_positions().items()})
+    except Exception as e:
+        d.log_error("orchestrator", "persistencia de órdenes/posiciones falló", e)
+
+
 def do_rebalance(d: DB, reason, equity, force=False):
     """Robot = ALPACA al 100% · estrategia agresiva multi-sector top-5. Rebalancea + coloca trailing
     stops. Diario: solo si CAMBIA la membresía del top-5 (nuevo líder / uno cae). Global66 NO interviene
@@ -133,6 +158,7 @@ def do_rebalance(d: DB, reason, equity, force=False):
     if not ex.DRY_RUN:
         time.sleep(2)                 # dejar que llenen las market orders antes del trailing stop
         place_trailing_stops(d)
+    persist_traceability(d, rb_id)    # vuelca órdenes reales a order_log + snapshot posiciones
     md, struct = allocator.rationale(target, meta, prev=cur)
     prose = ai_explain.explain_prose(struct, meta)          # prosa DeepSeek (None si falla)
     summary = (f"_{prose}_\n\n{md}" if prose else md)        # prosa + tabla; o solo tabla
@@ -155,7 +181,8 @@ def run_cycle(d: DB, now=None):
             d.log("WARN", "orchestrator", "equity ilegible → omito ciclo (no opero con valor falso)")
             return "skipped"
         cash = float(acc.get("cash", 0) or 0)
-        state = d.record_equity(equity, cash=cash)   # −30% sobre el capital de ALPACA (el 100% del robot)
+        exposure = (float(acc.get("long_market_value") or 0) / equity) if equity else 0.0
+        state = d.record_equity(equity, cash=cash, exposure=exposure)   # −30% sobre el capital de ALPACA (el 100% del robot)
         halted = check_circuit_breaker(d, state)
         d.heartbeat("heartbeat", status="ok", duration_ms=int((time.time()-t0)*1000), equity=equity)
         touch_lock()
