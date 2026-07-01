@@ -30,6 +30,7 @@ from db import DB
 HEARTBEAT_S = int(os.environ.get("INVESTOR_HEARTBEAT_S", "900"))   # 15 min
 CB_HALT   = float(os.environ.get("INVESTOR_CB_HALT", "0.25"))      # flatten si dd ≤ −25%
 CB_RESUME = float(os.environ.get("INVESTOR_CB_RESUME", "0.15"))    # reanuda al recuperar a −15%
+REBAL_BAND = float(os.environ.get("INVESTOR_REBAL_BAND", "0.05"))  # drift de peso que dispara re-equiponderar (anti-whipsaw)
 _LOCK = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "orchestrator.lock")
 
 
@@ -149,8 +150,13 @@ def do_rebalance(d: DB, reason, equity, force=False):
     cur = current_weights(equity)
     target, meta = allocator.compute_target(prices, current=cur or None)
     new_set, cur_set = set(target), {s for s, w in cur.items() if w > 0.01}
-    if not force and new_set == cur_set:
-        d.log("INFO", "orchestrator", f"{reason}: top-5 sin cambios ({sorted(new_set)}), no opero")
+    membership_same = new_set == cur_set
+    drift = max((abs(w - cur.get(s, 0.0)) for s, w in target.items()), default=1.0)
+    # Diario: actúa solo si cambia el top-5. Mensual (force): además re-equipondera, pero solo si el
+    # drift supera la banda (anti-whipsaw) → evita micro-trades inútiles y errores de "insufficient qty".
+    if membership_same and (not force or drift < REBAL_BAND):
+        d.log("INFO", "orchestrator", f"{reason}: top-5 sin cambios ({sorted(new_set)}), "
+              f"drift {drift*100:.1f}% < banda {REBAL_BAND*100:.0f}% → no opero")
         return "skip"
     rb_id = f"rb-{_now().strftime('%Y%m%d-%H%M')}"
     d.record_target(rb_id, target, {s: "líder momentum" for s in meta["leaders"]})
