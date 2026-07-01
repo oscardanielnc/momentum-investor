@@ -31,6 +31,7 @@ HEARTBEAT_S = int(os.environ.get("INVESTOR_HEARTBEAT_S", "900"))   # 15 min
 CB_HALT   = float(os.environ.get("INVESTOR_CB_HALT", "0.25"))      # flatten si dd ≤ −25%
 CB_RESUME = float(os.environ.get("INVESTOR_CB_RESUME", "0.15"))    # reanuda al recuperar a −15%
 REBAL_BAND = float(os.environ.get("INVESTOR_REBAL_BAND", "0.05"))  # drift de peso que dispara re-equiponderar (anti-whipsaw)
+EXIT_RANK  = int(os.environ.get("INVESTOR_EXIT_RANK", "12"))        # banda de histéresis del DIARIO (validada v9): mantiene un nombre mientras siga en el top-EXIT_RANK
 _LOCK = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "orchestrator.lock")
 
 
@@ -136,10 +137,30 @@ def persist_traceability(d: DB, rb_id):
         d.log_error("orchestrator", "persistencia de órdenes/posiciones falló", e)
 
 
+def hysteresis_target(held, ranking):
+    """Banda de histéresis del DIARIO (validada v9, exit_rank=12): mantiene los nombres tenidos que
+    sigan dentro del top-EXIT_RANK; rellena hasta TOPN con los mejores por ranking, respetando el tope
+    por sector. Devuelve la lista de símbolos objetivo. Evita el churn del borde #5/#6 (57% de días)."""
+    rank = {s: i + 1 for i, s in enumerate(ranking)}
+    top = [s for s in held if rank.get(s, 10**9) <= EXIT_RANK]      # se quedan los que siguen en la banda
+    sec_count = {}
+    for s in top:
+        sec_count[allocator.SECTOR.get(s, "?")] = sec_count.get(allocator.SECTOR.get(s, "?"), 0) + 1
+    for s in ranking:                                              # rellena huecos por mejor momentum
+        if len(top) >= allocator.TOPN:
+            break
+        sec = allocator.SECTOR.get(s, "?")
+        if s in top or sec_count.get(sec, 0) >= allocator.MAX_PER_SECTOR:
+            continue
+        top.append(s); sec_count[sec] = sec_count.get(sec, 0) + 1
+    return top[:allocator.TOPN]
+
+
 def do_rebalance(d: DB, reason, equity, force=False):
     """Robot = ALPACA al 100% · estrategia agresiva multi-sector top-5. Rebalancea + coloca trailing
-    stops. Diario: solo si CAMBIA la membresía del top-5 (nuevo líder / uno cae). Global66 NO interviene
-    (colchón personal fijo de Oscar, fuera del robot)."""
+    stops. MENSUAL (force): reset completo al top-5 (con tope sector), salvo drift < banda. DIARIO:
+    histéresis de rango — solo rota si un nombre cae fuera del top-EXIT_RANK (anti-churn, validado v9).
+    Global66 NO interviene (colchón personal fijo de Oscar, fuera del robot)."""
     if not ex.DRY_RUN and not ex.market_open():
         d.log("INFO", "orchestrator", f"{reason}: mercado cerrado, pospongo")
         return "closed"
@@ -149,29 +170,39 @@ def do_rebalance(d: DB, reason, equity, force=False):
         return "no_data"
     cur = current_weights(equity)
     target, meta = allocator.compute_target(prices, current=cur or None)
-    new_set, cur_set = set(target), {s for s, w in cur.items() if w > 0.01}
-    membership_same = new_set == cur_set
-    drift = max((abs(w - cur.get(s, 0.0)) for s, w in target.items()), default=1.0)
-    # Diario: actúa solo si cambia el top-5. Mensual (force): además re-equipondera, pero solo si el
-    # drift supera la banda (anti-whipsaw) → evita micro-trades inútiles y errores de "insufficient qty".
-    if membership_same and (not force or drift < REBAL_BAND):
-        d.log("INFO", "orchestrator", f"{reason}: top-5 sin cambios ({sorted(new_set)}), "
-              f"drift {drift*100:.1f}% < banda {REBAL_BAND*100:.0f}% → no opero")
-        return "skip"
+    held = {s for s, w in cur.items() if w > 0.01}
+    if force:
+        # MENSUAL: reset al top-5. Salta si nada cambió y el drift es chico (anti-whipsaw).
+        drift = max((abs(w - cur.get(s, 0.0)) for s, w in target.items()), default=1.0)
+        if set(target) == held and drift < REBAL_BAND:
+            d.log("INFO", "orchestrator", f"{reason}: top-5 sin cambios ({sorted(held)}), "
+                  f"drift {drift*100:.1f}% < banda {REBAL_BAND*100:.0f}% → no opero")
+            return "skip"
+        final_syms = list(target)
+    else:
+        # DIARIO: histéresis de rango. Solo rota si un nombre tenido sale del top-EXIT_RANK.
+        final_syms = hysteresis_target(held, meta["ranking"])
+        if held and set(final_syms) == held:
+            d.log("INFO", "orchestrator", f"{reason}: cartera dentro de la banda top-{EXIT_RANK} "
+                  f"({sorted(held)}) → no roto", {"exit_rank": EXIT_RANK})
+            return "skip"
+    final = {s: round(1.0 / len(final_syms), 4) for s in final_syms} if final_syms else {}
+    reasons = {s: ("líder top-5" if s in meta["leaders"] else f"dentro de banda top-{EXIT_RANK}")
+               for s in final}
     rb_id = f"rb-{_now().strftime('%Y%m%d-%H%M')}"
-    d.record_target(rb_id, target, {s: "líder momentum" for s in meta["leaders"]})
-    placed = ex.rebalance(target, equity)
+    d.record_target(rb_id, final, reasons)
+    placed = ex.rebalance(final, equity)
     if not ex.DRY_RUN:
         time.sleep(2)                 # dejar que llenen las market orders antes del trailing stop
         place_trailing_stops(d)
     persist_traceability(d, rb_id)    # vuelca órdenes reales a order_log + snapshot posiciones
-    md, struct = allocator.rationale(target, meta, prev=cur)
+    md, struct = allocator.rationale(final, meta, prev=cur)
     prose = ai_explain.explain_prose(struct, meta)          # prosa DeepSeek (None si falla)
     summary = (f"_{prose}_\n\n{md}" if prose else md)        # prosa + tabla; o solo tabla
     d.record_ai_explanation(summary, rebalance_id=rb_id, model=("deepseek" if prose else "deterministic"),
                             inputs=struct)
     d.log("INFO", "orchestrator", f"rebalanceo {reason}: {placed} órden(es) · "
-          f"{meta['n_sectors']} sectores · líderes {meta['leaders']}", {"rb": rb_id})
+          f"cartera {sorted(final)} · top-5 {meta['leaders']}", {"rb": rb_id})
     return placed
 
 
