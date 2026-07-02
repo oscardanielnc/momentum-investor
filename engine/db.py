@@ -83,14 +83,21 @@ class DB:
         return {"equity": eq, "peak": peak, "drawdown": (eq/peak - 1) if peak else 0.0}
 
     def record_equity(self, equity_mtm, cash=0.0, exposure=None, regime=None):
-        """Guarda un punto de equity MTM, actualiza el pico y el drawdown. Devuelve el estado."""
-        prev = self.conn.execute("SELECT MAX(peak) p FROM equity_history").fetchone()
+        """Guarda un punto de equity MTM, actualiza el pico y el drawdown. Devuelve el estado.
+        El pico se calcula desde `peak_since` (config): tras un ciclo de circuit breaker el pico
+        se re-ancla — si no, el drawdown quedaría congelado bajo el umbral y nunca se re-entraría."""
+        since = self.get_config("peak_since") or ""
+        prev = self.conn.execute("SELECT MAX(peak) p FROM equity_history WHERE ts>=?", (since,)).fetchone()
         peak = max(equity_mtm, prev["p"] or equity_mtm)
         dd = equity_mtm/peak - 1 if peak else 0.0
         self._ex("INSERT OR REPLACE INTO equity_history(ts,equity_mtm,cash,peak,drawdown,exposure,regime,source) "
                  "VALUES(?,?,?,?,?,?,?,?)", (_now(), equity_mtm, cash, peak, dd,
                   exposure if exposure is not None else 0.0, regime, "mtm"))
         return {"equity": equity_mtm, "peak": peak, "drawdown": dd}
+
+    def reset_peak(self, note=None):
+        """Re-ancla el pico del drawdown a partir de AHORA (reanudación del circuit breaker)."""
+        self.set_config("peak_since", _now(), note=note or "re-anclaje de pico (CB resume)")
 
     # ── CARTERA: pesos objetivo, órdenes (idempotentes), posiciones ──
     def record_target(self, rebalance_id, weights: dict, reasons: dict | None = None):
@@ -100,17 +107,21 @@ class DB:
                      "VALUES(?,?,?,?,?)", (rebalance_id, ts, sym, float(w), reasons.get(sym)))
 
     def record_order(self, client_order_id, symbol, side, otype, qty, mode,
-                     rebalance_id=None, price=None, status="NEW", exchange_order_id=None, raw=None):
-        """Idempotente: si el client_order_id ya existe, NO se duplica."""
+                     rebalance_id=None, price=None, status="NEW", exchange_order_id=None, raw=None,
+                     ts=None):
+        """Idempotente: si el client_order_id ya existe, NO se duplica.
+        `ts` = created_at REAL del exchange (si se omite, ahora) — así la auditoría no estampa
+        órdenes viejas con la hora del ciclo que las volcó."""
         self._ex("INSERT OR IGNORE INTO order_log(client_order_id,exchange_order_id,rebalance_id,ts_created,"
                  "symbol,side,type,qty,price,status,mode,raw_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                 (client_order_id, exchange_order_id, rebalance_id, _now(), symbol, side, otype,
+                 (client_order_id, exchange_order_id, rebalance_id, ts or _now(), symbol, side, otype,
                   float(qty), price, status, mode, json.dumps(raw) if raw else None))
 
-    def update_order(self, client_order_id, status, filled_qty=None, avg_fill_price=None, fee=None):
+    def update_order(self, client_order_id, status, filled_qty=None, avg_fill_price=None, fee=None,
+                     ts=None):
         self._ex("UPDATE order_log SET ts_updated=?,status=?,filled_qty=COALESCE(?,filled_qty),"
                  "avg_fill_price=COALESCE(?,avg_fill_price),fee=COALESCE(?,fee) WHERE client_order_id=?",
-                 (_now(), status, filled_qty, avg_fill_price, fee, client_order_id))
+                 (ts or _now(), status, filled_qty, avg_fill_price, fee, client_order_id))
 
     def snapshot_positions(self, positions: dict):
         """positions = {symbol:{qty,avg,...}}. Reemplaza el estado vivo de posiciones."""

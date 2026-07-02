@@ -103,6 +103,30 @@ def list_orders(limit=100, status="all"):
     d = _req("GET", f"/v2/orders?status={status}&limit={int(limit)}&direction=desc&nested=true")
     return d if isinstance(d, list) else []
 
+def open_trailing_stops():
+    """{symbol: acciones cubiertas} por trailing stops SELL abiertos (para reconciliar cada heartbeat)."""
+    out = {}
+    for o in list_orders(limit=100, status="open"):
+        if o.get("type") == "trailing_stop" and o.get("side") == "sell":
+            out[o["symbol"]] = out.get(o["symbol"], 0.0) + float(o.get("qty") or 0)
+    return out
+
+def latest_prices(symbols):
+    """Último trade por símbolo (data API, feed IEX). {} si falla — el llamador decide qué hacer."""
+    if DRY_RUN or not symbols:
+        return {}
+    try:
+        r = requests.get("https://data.alpaca.markets/v2/stocks/trades/latest",
+                         params={"symbols": ",".join(symbols), "feed": "iex"},
+                         headers=_hdr(), timeout=15)
+        if r.status_code >= 400:
+            log.warning(f"[alpaca] latest_prices: {r.status_code} {r.text[:120]}")
+            return {}
+        return {s: float(t["p"]) for s, t in (r.json().get("trades") or {}).items()}
+    except Exception as e:
+        log.warning(f"[alpaca] latest_prices: {e}")
+        return {}
+
 # ─── Órdenes ────────────────────────────────────────────────────────────────
 def _coid(tag, symbol):
     return f"inv-{tag}-{symbol}-{int(time.time())}"[:48]

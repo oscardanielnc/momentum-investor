@@ -18,7 +18,7 @@ Run:  python -m engine.orchestrator           # un ciclo (para probar)
       python -m engine.orchestrator --loop     # loop continuo
 """
 from __future__ import annotations
-import os, sys, time, atexit
+import json, os, sys, time, atexit
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -79,20 +79,54 @@ def current_weights(equity):
     return {s: p["mv"] / equity for s, p in pos.items()}
 
 
+def _cb_resume(d: DB, why):
+    """Reanuda tras un HALT: re-ancla el pico al equity actual (si no, el dd seguiría bajo el umbral
+    y se re-haltearía al instante) y fuerza el diario del próximo ciclo para re-entrar al top-5."""
+    d.set_config("halted", "false")
+    d.set_config("cb_ref", "")
+    d.reset_peak(note=f"CB resume: {why}")
+    d.set_config("last_daily", "")            # el próximo ciclo re-entra (diario)
+    d.review("cb_resume", f"Circuit breaker RESUME: {why}. Pico re-anclado; re-entrada en el próximo ciclo",
+             severity="warning")
+    d.log("INFO", "circuit_breaker", f"RESUME → {why} · pico re-anclado · re-entrada próximo ciclo")
+
+
 def check_circuit_breaker(d: DB, state):
-    """Salida intradía ante eventos: flatten si el drawdown cruza el umbral. Persistente."""
+    """Salida intradía ante eventos: flatten si el drawdown cruza el umbral. Persistente.
+    Reanudación AUTOMÁTICA: en el HALT se fotografía la canasta vendida; mientras dura el HALT se
+    calcula el equity HIPOTÉTICO (si no hubiéramos vendido) con los últimos precios — al recuperar
+    el nivel de RESUME, re-entra solo. (El equity real en caja queda plano: no sirve para medir.)"""
     dd = state["drawdown"] or 0.0
     halted = d.get_config("halted", "false") == "true"
     if not halted and dd <= -CB_HALT:
+        pos = ex.get_positions()
+        basket = {s: p["mv"] / p["qty"] for s, p in pos.items() if p.get("qty")}
+        d.set_config("cb_ref", json.dumps({"basket": basket, "equity": state["equity"],
+                                           "peak": state["peak"], "ts": _now().isoformat()}))
         ex.flatten()
         d.set_config("halted", "true")
         d.review("cb_activado", f"Circuit breaker HALT: drawdown {dd*100:.1f}% → flatten", severity="critical")
         d.log("CRITICAL", "circuit_breaker", f"HALT dd={dd*100:.1f}% → liquidado a caja")
         return True
-    if halted and dd >= -CB_RESUME:
-        d.set_config("halted", "false")
-        d.log("INFO", "circuit_breaker", f"RESUME dd={dd*100:.1f}% → se permite re-entrar")
-        return False
+    if halted:
+        if dd >= -CB_RESUME:                  # el equity real recuperó (aportes / test / dd leve)
+            _cb_resume(d, f"drawdown real {dd*100:.1f}% sobre el umbral")
+            return False
+        try:
+            ref = json.loads(d.get_config("cb_ref") or "null")
+        except Exception:
+            ref = None
+        if ref and ref.get("basket") and ref.get("equity") and ref.get("peak"):
+            px = ex.latest_prices(list(ref["basket"]))
+            ratios = [px[s] / p0 for s, p0 in ref["basket"].items() if px.get(s) and p0]
+            if ratios:
+                hypo = ref["equity"] * (sum(ratios) / len(ratios))
+                if hypo >= ref["peak"] * (1 - CB_RESUME):
+                    _cb_resume(d, f"canasta vendida recuperó a {hypo/ref['peak']*100-100:+.1f}% del pico "
+                                  f"(umbral −{CB_RESUME*100:.0f}%)")
+                    return False
+                d.log("INFO", "circuit_breaker", f"HALT vigente · equity hipotético "
+                      f"{hypo/ref['peak']*100-100:+.1f}% del pico (resume en −{CB_RESUME*100:.0f}%)")
     return halted
 
 
@@ -104,17 +138,60 @@ def place_trailing_stops(d: DB):
     n = 0
     for s, p in ex.get_positions().items():
         try:
-            if ex.place_trailing_stop(s, p["qty"], allocator.TRAIL_PCT) is not None:
+            q = int(abs(p["qty"]))
+            if q < 1:
+                continue
+            if ex.place_trailing_stop(s, q, allocator.TRAIL_PCT) is not None:
                 n += 1
+            else:   # rechazo HTTP (p.ej. la compra aún no liquida) → dejar rastro; el heartbeat lo repara
+                d.log_error("orchestrator", f"trailing stop {s} rechazado por Alpaca ({q} acc) — "
+                            "la reconciliación del heartbeat lo repondrá")
         except Exception as e:
             d.log_error("orchestrator", f"trailing stop {s} falló", e)
     d.log("INFO", "orchestrator", f"trailing stops colocados: {n} (a {allocator.TRAIL_PCT:.0f}%)")
     return n
 
 
-def persist_traceability(d: DB, rb_id):
+def reconcile_stops(d: DB):
+    """Red de seguridad CADA heartbeat: toda posición debe tener trailing stop vivo por sus acciones
+    enteras. Si falta cobertura (stop rechazado en el rebalanceo, cancelado a mano, parcial), se
+    repone la diferencia y se deja rastro. Blindado: no tumba el ciclo."""
+    if ex.DRY_RUN:
+        return 0
+    try:
+        pos = ex.get_positions()
+        if not pos:
+            return 0
+        stops = ex.open_trailing_stops()
+        fixed = 0
+        for s, p in pos.items():
+            missing = int(abs(p["qty"])) - int(stops.get(s, 0))
+            if missing < 1:
+                continue
+            if ex.place_trailing_stop(s, missing, allocator.TRAIL_PCT) is not None:
+                fixed += 1
+                d.log("WARN", "orchestrator", f"stop faltante repuesto: {s} {missing} acc a {allocator.TRAIL_PCT:.0f}%")
+                d.review("stop_reparado", f"{s}: trailing stop repuesto ({missing} acciones sin cobertura)",
+                         symbol=s, severity="warning")
+            else:
+                d.log_error("orchestrator", f"{s} sin trailing stop ({missing} acc) y la reposición falló")
+        return fixed
+    except Exception as e:
+        d.log_error("orchestrator", "reconciliación de stops falló", e)
+        return 0
+
+
+def _iso19(ts):
+    """Normaliza timestamps ISO a 'YYYY-MM-DDTHH:MM:SS' (UTC) para comparar/guardar de forma estable."""
+    return (ts or "")[:19]
+
+
+def persist_traceability(d: DB, rb_id, since_iso=None):
     """Trazabilidad completa: vuelca las órdenes 'inv-*' de Alpaca a order_log (idempotente por
-    client_order_id) + snapshotea las posiciones vivas. Blindado: nunca tumba el ciclo."""
+    client_order_id) + snapshotea las posiciones vivas. Cada orden se guarda con SU created_at real
+    y el rebalance_id se atribuye SOLO a las creadas desde `since_iso` (inicio de este rebalanceo) —
+    antes se estampaba todo con la hora/ciclo del volcado y contaminaba la auditoría.
+    Blindado: nunca tumba el ciclo."""
     if ex.DRY_RUN:
         return
     try:
@@ -125,12 +202,16 @@ def persist_traceability(d: DB, rb_id):
                 continue
             st = (o.get("status") or "new").upper()
             qty = float(o.get("qty") or o.get("filled_qty") or 0)
+            created = _iso19(o.get("created_at"))
+            rb = rb_id if (since_iso and created and created >= _iso19(since_iso)) else None
             d.record_order(coid, o["symbol"], o["side"], o["type"], qty, mode,
-                           rebalance_id=rb_id, price=o.get("limit_price"),
-                           status=st, exchange_order_id=o.get("id"), raw=o)   # INSERT OR IGNORE
+                           rebalance_id=rb, price=o.get("limit_price"),
+                           status=st, exchange_order_id=o.get("id"), raw=o,
+                           ts=created or None)                                # INSERT OR IGNORE
             d.update_order(coid, st,
                            filled_qty=(float(o["filled_qty"]) if o.get("filled_qty") else None),
-                           avg_fill_price=(float(o["filled_avg_price"]) if o.get("filled_avg_price") else None))
+                           avg_fill_price=(float(o["filled_avg_price"]) if o.get("filled_avg_price") else None),
+                           ts=_iso19(o.get("updated_at")) or None)
         d.snapshot_positions({s: {"qty": p["qty"], "avg": p["avg"]}
                               for s, p in ex.get_positions().items()})
     except Exception as e:
@@ -189,13 +270,15 @@ def do_rebalance(d: DB, reason, equity, force=False):
     final = {s: round(1.0 / len(final_syms), 4) for s in final_syms} if final_syms else {}
     reasons = {s: ("líder top-5" if s in meta["leaders"] else f"dentro de banda top-{EXIT_RANK}")
                for s in final}
-    rb_id = f"rb-{_now().strftime('%Y%m%d-%H%M')}"
+    t_start = _now()
+    rb_id = f"rb-{t_start.strftime('%Y%m%d-%H%M')}"
     d.record_target(rb_id, final, reasons)
     placed = ex.rebalance(final, equity)
     if not ex.DRY_RUN:
         time.sleep(2)                 # dejar que llenen las market orders antes del trailing stop
         place_trailing_stops(d)
-    persist_traceability(d, rb_id)    # vuelca órdenes reales a order_log + snapshot posiciones
+    # vuelca órdenes reales a order_log (ts reales; rb_id solo para las de ESTE rebalanceo) + snapshot
+    persist_traceability(d, rb_id, since_iso=t_start.isoformat())
     md, struct = allocator.rationale(final, meta, prev=cur)
     prose = ai_explain.explain_prose(struct, meta)          # prosa DeepSeek (None si falla)
     summary = (f"_{prose}_\n\n{md}" if prose else md)        # prosa + tabla; o solo tabla
@@ -226,6 +309,7 @@ def run_cycle(d: DB, now=None):
         if halted:
             d.log("WARN", "orchestrator", "en HALT (circuit breaker) → no abro posiciones")
             return "halted"
+        reconcile_stops(d)            # red de seguridad: toda posición con su trailing stop vivo
         # programación: mensual (cambio de mes) o diario
         ym, today = now.strftime("%Y-%m"), now.date().isoformat()
         if d.get_config("last_monthly") != ym:

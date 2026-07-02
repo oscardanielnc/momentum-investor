@@ -66,6 +66,34 @@ chk("review_queue registra el CB", any(x["kind"]=="cb_activado" for x in d.pendi
 d.record_equity(440.0)            # dd -12% → sobre CB_RESUME 15%
 halted2 = O.check_circuit_breaker(d, d.get_state())
 chk("circuit breaker reanuda al recuperar", halted2 is False and d.get_config("halted")=="false")
+chk("resume re-ancla el pico (peak_since)", (d.get_config("peak_since") or "") != "")
+chk("resume fuerza re-entrada (last_daily reseteado)", d.get_config("last_daily")=="")
+
+# CB AUTOMÁTICO: en HALT, el equity real (caja) queda plano → el resume debe medirse con el
+# equity HIPOTÉTICO de la canasta vendida (cb_ref + últimos precios).
+import json as _json
+d.set_config("halted","true")
+d.set_config("cb_ref", _json.dumps({"basket":{"AMD":100.0,"STX":50.0},"equity":360.0,"peak":500.0,"ts":"t"}))
+deep = {"equity":360.0, "peak":500.0, "drawdown":-0.28}       # caja congelada a −28%
+_orig_lp = O.ex.latest_prices
+O.ex.latest_prices = lambda syms: {"AMD":100.0,"STX":50.0}    # sin recuperación → sigue HALT
+chk("CB sigue en HALT si la canasta no recupera", O.check_circuit_breaker(d, deep) is True)
+O.ex.latest_prices = lambda syms: {"AMD":125.0,"STX":62.5}    # +25% → hipotético 450 = −10% del pico
+h4 = O.check_circuit_breaker(d, deep)
+chk("CB reanuda SOLO al recuperar la canasta (automático)", h4 is False and d.get_config("halted")=="false")
+O.ex.latest_prices = _orig_lp
+
+# RECONCILIACIÓN DE STOPS: posición sin trailing stop → se repone solo la faltante
+_orig = (O.ex.DRY_RUN, O.ex.get_positions, O.ex.open_trailing_stops, O.ex.place_trailing_stop)
+O.ex.DRY_RUN = False
+O.ex.get_positions = lambda: {"INTC":{"qty":157.3,"mv":1.0,"avg":1.0},"AMD":{"qty":37.9,"mv":1.0,"avg":1.0}}
+O.ex.open_trailing_stops = lambda: {"AMD": 37}
+_placed = []
+O.ex.place_trailing_stop = lambda s,q,t,coid=None: (_placed.append((s,q)) or {"ok":1})
+n_fix = O.reconcile_stops(d)
+chk("reconciliación repone SOLO el stop faltante", n_fix==1 and _placed==[("INTC",157)], str(_placed))
+chk("reparación deja rastro en review_queue", any(x["kind"]=="stop_reparado" for x in d.pending_reviews()))
+O.ex.DRY_RUN, O.ex.get_positions, O.ex.open_trailing_stops, O.ex.place_trailing_stop = _orig
 
 d.close()
 print("\n"+"="*62); print(f"RESUMEN: {_p} PASS · {_f} FAIL"); print("="*62)
