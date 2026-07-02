@@ -38,3 +38,6 @@ env/
 Thumbs.db
 .vscode/
 .idea/
+
+# Datos PIT: parquets regenerables (ignorados), CSVs de membresía chicos (sí se versionan)
+research/data_pit/*.parquet
