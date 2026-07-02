@@ -148,6 +148,98 @@ def health():
     }
 
 
+# ── Estrategia MANUAL de Oscar: 80% QQQ + 20% QLD con filtro SMA200 ± banda 1% ────────────────
+# Validada en research/backtest_v11_etf.py y v12 (walk-forward): señal al CIERRE de QQQ →
+# se ejecuta al OPEN del día siguiente. RIESGO ON = 80/20 · RIESGO OFF = 100% caja.
+SMA_N, BAND = 200, 0.01
+W_QQQ, W_QLD = 0.80, 0.20
+DRIFT_LO, DRIFT_HI = 0.15, 0.25          # rebalancear solo si QLD pesa <15% o >25% de lo invertido
+_strat_cache = {"t": 0.0, "data": None}
+
+
+def _daily_closes(sym, days=720):
+    """Cierres diarios ajustados (split+div) de Alpaca. [(fecha_iso, close), ...]"""
+    import requests
+    from datetime import timedelta
+    start = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    rows, tok = [], None
+    while True:
+        p = {"symbols": sym, "timeframe": "1Day", "start": start, "limit": 10000,
+             "adjustment": "all", "feed": "iex"}
+        if tok:
+            p["page_token"] = tok
+        r = requests.get("https://data.alpaca.markets/v2/stocks/bars", params=p,
+                         headers=ex._hdr(), timeout=20)
+        if r.status_code != 200:
+            return []
+        j = r.json()
+        rows.extend((j.get("bars") or {}).get(sym, []))
+        tok = j.get("next_page_token")
+        if not tok:
+            break
+    return [(b["t"][:10], float(b["c"])) for b in rows]
+
+
+@app.get("/api/estrategia")
+def estrategia():
+    import time as _t
+    if _strat_cache["data"] and _t.time() - _strat_cache["t"] < 900:
+        return _strat_cache["data"]
+    qqq = _daily_closes("QQQ")
+    if len(qqq) < SMA_N + 5:
+        return JSONResponse({"error": "datos insuficientes de QQQ"}, status_code=503)
+    # si el mercado está ABIERTO, la última barra diaria es parcial → la señal usa el cierre previo
+    if ex.market_open():
+        qqq = qqq[:-1]
+    dates = [d for d, _ in qqq]
+    closes = [c for _, c in qqq]
+    sma, run = [None] * len(closes), 0.0
+    for i, c in enumerate(closes):
+        run += c
+        if i >= SMA_N:
+            run -= closes[i - SMA_N]
+        if i >= SMA_N - 1:
+            sma[i] = run / SMA_N
+    state, states, last_flip = True, [], None
+    for i, c in enumerate(closes):
+        if sma[i]:
+            if c > sma[i] * (1 + BAND):
+                new = True
+            elif c < sma[i] * (1 - BAND):
+                new = False
+            else:
+                new = state
+            if states and new != state:
+                last_flip = dates[i]
+            state = new
+        states.append(state)
+    qld = _daily_closes("QLD", days=15)
+    flip_today = len(states) >= 2 and states[-1] != states[-2]
+    i0 = max(0, len(dates) - 130)
+    data = {
+        "estado": "ON" if state else "OFF",
+        "objetivo": ({"QQQ": W_QQQ, "QLD": W_QLD} if state else {"caja": 1.0}),
+        "senal_fecha": dates[-1],
+        "qqq_close": round(closes[-1], 2),
+        "sma": round(sma[-1], 2),
+        "dist_pct": round((closes[-1] / sma[-1] - 1) * 100, 2),
+        "nivel_off": round(sma[-1] * (1 - BAND), 2),
+        "nivel_on": round(sma[-1] * (1 + BAND), 2),
+        "flip_pendiente": flip_today,           # cruzó en el último cierre → ejecutar al próximo open
+        "ultimo_cambio": last_flip,
+        "px": {"QQQ": round(closes[-1], 2), "QLD": round(qld[-1][1], 2) if qld else None},
+        "drift": {"lo": DRIFT_LO, "hi": DRIFT_HI},
+        "params": {"sma_n": SMA_N, "band_pct": BAND * 100, "w_qqq": W_QQQ, "w_qld": W_QLD},
+        "chart": {"dates": dates[i0:], "close": [round(c, 2) for c in closes[i0:]],
+                  "sma": [round(s, 2) if s else None for s in sma[i0:]],
+                  "on": [round(s * (1 + BAND), 2) if s else None for s in sma[i0:]],
+                  "off": [round(s * (1 - BAND), 2) if s else None for s in sma[i0:]]},
+        "actualizado": lima(datetime.now(timezone.utc).isoformat()),
+    }
+    _strat_cache.update(t=_t.time(), data=data)
+    return data
+
+
 @app.get("/")
 def index():
     return FileResponse(os.path.join(HERE, "index.html"), headers={"Cache-Control": "no-store"})

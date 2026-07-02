@@ -87,7 +87,7 @@
 <body>
 <div class="header">
   <div><h1>💼 Mi Patrimonio</h1>
-    <div class="muted" style="font-size:12px">Estrategia agresiva multi-sector · top-5 · trailing 20% · tope 80%/sector</div></div>
+    <div class="muted" style="font-size:12px">Cartera manual QQQ/QLD (señal SMA200) · robot multi-sector en PAPER como laboratorio</div></div>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <span class="pill"><span class="dot" id="robotdot"></span> <span id="robotstatus">Robot</span></span>
     <span class="pill muted" id="clock">— Lima</span>
@@ -107,9 +107,31 @@
     <div class="sub muted" id="seclist">—</div></div>
 </div>
 
+<div class="grid main" style="margin-top:16px">
+  <div class="card">
+    <h2>🧭 Mi cartera manual · QQQ/QLD (dinero real)</h2>
+    <div id="stratBadge" class="muted">Cargando señal…</div>
+    <div id="stratInfo" style="margin-top:10px;font-size:13px"></div>
+    <div style="margin-top:14px">
+      <div class="muted" style="font-size:12px;margin-bottom:6px">📐 Calculadora de órdenes — ingresa lo que tienes HOY (US$):</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <label class="muted" style="font-size:12px">QQQ $<input id="inQQQ" type="number" min="0" step="any" style="width:90px;padding:5px;border:1px solid var(--line);border-radius:8px"></label>
+        <label class="muted" style="font-size:12px">QLD $<input id="inQLD" type="number" min="0" step="any" style="width:90px;padding:5px;border:1px solid var(--line);border-radius:8px"></label>
+        <label class="muted" style="font-size:12px">Caja $<input id="inCash" type="number" min="0" step="any" style="width:90px;padding:5px;border:1px solid var(--line);border-radius:8px"></label>
+        <button onclick="calcOrders()" style="padding:6px 14px;border:none;border-radius:8px;background:var(--accent);color:#fff;font-weight:600;cursor:pointer">Calcular</button>
+      </div>
+      <div id="orders" style="margin-top:10px"></div>
+    </div>
+    <div class="footnote">Señal: cierre de QQQ vs SMA200 ± 1% (histéresis) · se ejecuta al OPEN del día siguiente ·
+      rebalanceo solo si QLD pesa &lt;15% o &gt;25% de lo invertido · validado en backtests v11/v12 (walk-forward 2008-2026)</div>
+  </div>
+  <div class="card"><h2>📉 QQQ vs SMA200 (la señal)</h2><div class="cw"><canvas id="stratChart"></canvas></div>
+    <div class="footnote" id="stratFoot">—</div></div>
+</div>
+
 <div class="grid main">
   <div class="card"><h2>📈 Curva de patrimonio</h2><div class="cw"><canvas id="equityChart"></canvas></div>
-    <div class="footnote">Equity MTM · hora de Lima (UTC−5)</div></div>
+    <div class="footnote">Equity MTM · hora de Lima (UTC−5) · robot en PAPER (laboratorio)</div></div>
   <div class="card"><h2>🎯 Cartera (top-5)</h2><div id="positions" class="muted">Cargando…</div>
     <div class="footnote">Trailing stop 20% por posición · equiponderado</div></div>
 </div>
@@ -194,7 +216,66 @@ async function loadHealth(){const h=await get('/api/health'); if(!h)return;
       <span>${r.detail} <span class="muted">· ${r.ts}</span></span></div>`;});
   $('health').innerHTML=html||'<div class="muted">Todo en orden.</div>';
 }
-function loadAll(){loadSummary();loadEquity();loadPositions();loadRationale();loadHistory();loadHealth();}
+// ── Mi cartera manual QQQ/QLD ─────────────────────────────────────────────
+let stratChart, STRAT=null;
+async function loadStrategy(){
+  const s=await get('/api/estrategia'); if(!s||s.error){$('stratBadge').textContent='⚠️ señal no disponible';return;}
+  STRAT=s;
+  const on=s.estado==='ON';
+  const badge=on?'🟢 RIESGO ON — objetivo: 80% QQQ + 20% QLD':'🔴 RIESGO OFF — objetivo: 100% caja';
+  const flip=s.flip_pendiente?`<div style="margin-top:6px;padding:8px 12px;background:#fbf0d8;color:var(--amber);border-radius:10px;font-weight:700">
+    🔔 LA SEÑAL CAMBIÓ EN EL ÚLTIMO CIERRE → ejecuta el cambio en la PRÓXIMA APERTURA (9:30 NY / 8:30 Lima)</div>`:'';
+  $('stratBadge').innerHTML=`<div style="font-size:17px;font-weight:800;color:${on?'var(--green)':'var(--red)'}">${badge}</div>${flip}`;
+  $('stratInfo').innerHTML=
+    `QQQ cerró <b>$${s.qqq_close}</b> el ${s.senal_fecha} · SMA200 <b>$${s.sma}</b> · distancia <b class="${s.dist_pct>=0?'green':'red'}">${s.dist_pct>0?'+':''}${s.dist_pct}%</b><br>
+     <span class="muted">Niveles: pasa a OFF si cierra &lt; <b>$${s.nivel_off}</b> · pasa a ON si cierra &gt; <b>$${s.nivel_on}</b> ·
+     último cambio de estado: ${s.ultimo_cambio||'—'} · actualizado ${s.actualizado}</span>`;
+  // gráfico señal
+  const c=s.chart;
+  if(stratChart)stratChart.destroy();
+  stratChart=new Chart($('stratChart'),{type:'line',data:{labels:c.dates,datasets:[
+    {label:'QQQ',data:c.close,borderColor:'#5b8def',borderWidth:2,pointRadius:0,tension:.2},
+    {label:'SMA200',data:c.sma,borderColor:'#c8922a',borderWidth:1.7,pointRadius:0,tension:.2},
+    {label:'banda',data:c.on,borderColor:'#1faa6b55',borderWidth:1,pointRadius:0,borderDash:[4,4]},
+    {label:'banda2',data:c.off,borderColor:'#e1576b55',borderWidth:1,pointRadius:0,borderDash:[4,4]}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{y:{grid:{color:'#eef1f6'},ticks:{color:'#7a8595',callback:v=>'$'+v}},
+              x:{grid:{display:false},ticks:{color:'#7a8595',maxTicksLimit:5}}}}});
+  $('stratFoot').textContent=`últimos ${c.dates.length} días · verde punteado = nivel ON ($${s.nivel_on}) · rojo punteado = nivel OFF ($${s.nivel_off})`;
+  // restaurar inputs guardados
+  ['inQQQ','inQLD','inCash'].forEach(k=>{const v=localStorage.getItem(k);if(v!==null)$(k).value=v;});
+  if(localStorage.getItem('inQQQ')!==null)calcOrders();
+}
+function calcOrders(){
+  if(!STRAT)return;
+  const q=+($('inQQQ').value||0), l=+($('inQLD').value||0), c=+($('inCash').value||0);
+  ['inQQQ','inQLD','inCash'].forEach(k=>localStorage.setItem(k,$(k).value||'0'));
+  const total=q+l+c;
+  if(total<=0){$('orders').innerHTML='<span class="muted">Ingresa tus montos para ver las órdenes.</span>';return;}
+  const on=STRAT.estado==='ON', px=STRAT.px;
+  const line=(txt,color)=>`<div style="padding:7px 12px;background:var(--soft);border-radius:9px;margin-top:6px;font-weight:600;color:${color||'var(--tx)'}">${txt}</div>`;
+  let html='';
+  if(!on){
+    if(q+l<1) html=line('✅ Ya estás 100% en caja. Nada que hacer.','var(--green)');
+    else{ if(q>=1)html+=line(`🔴 VENDE todo tu QQQ: $${q.toLocaleString('en-US',{maximumFractionDigits:0})} (≈ ${(q/px.QQQ).toFixed(2)} acciones)`,'var(--red)');
+          if(l>=1)html+=line(`🔴 VENDE todo tu QLD: $${l.toLocaleString('en-US',{maximumFractionDigits:0})} (≈ ${(l/px.QLD).toFixed(2)} acciones)`,'var(--red)');
+          html+=line('→ El total queda en caja (money market / dólares) hasta que la señal vuelva a ON.'); }
+  }else{
+    const tq=total*STRAT.params.w_qqq, tl=total*STRAT.params.w_qld;
+    const inv=q+l, wl=inv>0?l/inv:0;
+    const inBand=inv>0 && c/total<0.05 && wl>=STRAT.drift.lo && wl<=STRAT.drift.hi;
+    if(inBand) html=line(`✅ Dentro de banda (QLD pesa ${(wl*100).toFixed(1)}% de lo invertido, banda 15–25%). No hagas nada.`,'var(--green)');
+    else{
+      const dq=tq-q, dl=tl-l;
+      const fmt=v=>'$'+Math.abs(v).toLocaleString('en-US',{maximumFractionDigits:0});
+      if(Math.abs(dq)>=1)html+=line(`${dq>0?'🟢 COMPRA':'🔴 VENDE'} ${fmt(dq)} de QQQ (≈ ${Math.abs(dq/px.QQQ).toFixed(2)} acciones a ~$${px.QQQ})`,dq>0?'var(--green)':'var(--red)');
+      if(Math.abs(dl)>=1)html+=line(`${dl>0?'🟢 COMPRA':'🔴 VENDE'} ${fmt(dl)} de QLD (≈ ${Math.abs(dl/px.QLD).toFixed(2)} acciones a ~$${px.QLD})`,dl>0?'var(--green)':'var(--red)');
+      html+=line(`→ Objetivo final: ${fmt(tq)} en QQQ (80%) + ${fmt(tl)} en QLD (20%). Ejecuta en la apertura, órdenes de mercado.`);
+    }
+  }
+  $('orders').innerHTML=html;
+}
+function loadAll(){loadSummary();loadEquity();loadPositions();loadRationale();loadHistory();loadHealth();loadStrategy();}
 loadAll(); setInterval(loadAll,30000);
 </script>
 </body>
