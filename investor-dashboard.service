@@ -1,5 +1,5 @@
 [Unit]
-Description=investor — dashboard "Mi Patrimonio" (FastAPI, puerto 8080)
+Description=investor - dashboard (FastAPI, port 8080)
 After=network-online.target investor-robot.service
 Wants=network-online.target
 

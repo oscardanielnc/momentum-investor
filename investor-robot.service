@@ -1,5 +1,5 @@
 [Unit]
-Description=investor — robot momentum multi-sector (orquestador 24/7)
+Description=investor - multi-sector momentum robot (24/7 orchestrator)
 After=network-online.target
 Wants=network-online.target
 

@@ -1,15 +1,15 @@
 @echo off
-title investor - ROBOT (demo paper)
-cd /d "D:\OSCAR\Documents\Trading Proyects\investor"
+title investor - ROBOT (paper)
+cd /d "%~dp0.."
 set INVESTOR_DRY_RUN=false
 set INVESTOR_ALPACA_LIVE=false
 set INVESTOR_HEARTBEAT_S=900
 echo ============================================================
-echo   investor - ROBOT en DEMO (paper)
-echo   Heartbeat cada 15 min + rebalanceo diario
-echo   Cerrar esta ventana o Ctrl+C para parar
+echo   investor - ROBOT on the PAPER account
+echo   Heartbeat every 15 min + daily rebalance check
+echo   Close this window or press Ctrl+C to stop
 echo ============================================================
 python engine\orchestrator.py --loop
 echo.
-echo El robot se detuvo. Pulsa una tecla para cerrar.
+echo The robot stopped. Press any key to close.
 pause >nul
