@@ -1,31 +1,35 @@
 """
-investor — CAPA DE PERSISTENCIA (SQLite). La memoria del robot sobre db/schema.sql.
-Fuente única de verdad: estado (equity/pico para el freno DD) + auditoría + logs de validación.
+SQLite persistence layer on top of db/schema.sql.
 
-Patrones de robustez (heredados de kepler, probados en vivo):
-  - WAL + busy_timeout → lecturas no bloquean escrituras, resiste cortes y locks.
-  - Idempotencia en órdenes (client_order_id = PK, INSERT OR IGNORE).
-  - Timestamps UTC ISO-8601. Context en JSON para reproducir cualquier caso.
-  - Métodos cortos y blindados → el orquestador nunca se cae por un fallo de log.
+Single source of truth for the robot: equity and peak (for the drawdown circuit breaker),
+target weights, orders, positions, rationale, and validation logs.
 
-Uso típico:
-  d = DB()                      # crea/abre data/investor.db e inicializa el schema
-  d.log("INFO","orchestrator","ciclo ok")
-  st = d.record_equity(1000.0, cash=200.0)   # devuelve {equity,peak,drawdown}
-  d.record_target("rb-2026-06-29", {"AMD":0.2,...}, {"AMD":"líder momentum"})
+Robustness choices:
+  - WAL + busy_timeout: readers (the dashboard) never block the writer (the orchestrator).
+  - Idempotent orders: client_order_id is the primary key and inserts use INSERT OR IGNORE.
+  - UTC ISO-8601 timestamps; context stored as JSON so any case can be reproduced.
+  - Logging methods swallow their own errors: a failed log write must never stop a cycle.
+
+Typical use:
+  d = DB()                                    # opens data/investor.db and applies the schema
+  d.log("INFO", "orchestrator", "cycle ok")
+  st = d.record_equity(1000.0, cash=200.0)    # returns {equity, peak, drawdown}
+  d.record_target("rb-2026-06-29", {"AMD": 0.2, ...}, {"AMD": "momentum leader"})
 """
 from __future__ import annotations
 import json, os, sqlite3, traceback as _tb
 from datetime import datetime, timezone
 
-_PROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # engine/ → raíz del proyecto
-_DEF_DB = os.path.join(_PROOT, "data", "investor.db")                  # portable (Windows / Linux / VM)
+_PROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DEF_DB = os.path.join(_PROOT, "data", "investor.db")
 _SCHEMA = os.path.join(_PROOT, "db", "schema.sql")
 
 def _now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 class DB:
+    """Thin wrapper around a SQLite connection with the robot's read/write operations."""
+
     def __init__(self, path: str = _DEF_DB, schema: str = _SCHEMA):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self.path = path
@@ -45,13 +49,13 @@ class DB:
         self.conn.commit()
         return cur
 
-    # ── LOGS (lo que Oscar pidió: validar, detectar errores y señales a revisar) ──
+    # ── Logs ──
     def log(self, level, component, message, context: dict | None = None):
         try:
             self._ex("INSERT INTO app_log(ts,level,component,message,context_json) VALUES(?,?,?,?,?)",
                      (_now(), level, component, message, json.dumps(context) if context else None))
         except Exception:
-            pass  # un fallo de log JAMÁS debe tumbar el ciclo
+            pass
 
     def log_error(self, component, message, exc: Exception | None = None, error_type=None):
         try:
@@ -62,7 +66,7 @@ class DB:
             pass
 
     def review(self, kind, detail, symbol=None, severity="info"):
-        """Cola de 'señales que valen la pena revisar' (spread alto, gap, señal fuerte, CB…)."""
+        """Queue an event worth a human look (circuit breaker, repaired stop, ...)."""
         try:
             self._ex("INSERT INTO review_queue(ts,kind,symbol,detail,severity) VALUES(?,?,?,?,?)",
                      (_now(), kind, symbol, detail, severity))
@@ -73,9 +77,9 @@ class DB:
         self._ex("INSERT INTO heartbeat(ts,cycle_type,status,skip_reason,duration_ms,equity_mtm) "
                  "VALUES(?,?,?,?,?,?)", (_now(), cycle_type, status, skip_reason, duration_ms, equity))
 
-    # ── ESTADO: equity MTM + pico (para el freno DD) ──
+    # ── State: mark-to-market equity and peak ──
     def get_state(self):
-        """Último equity, pico histórico y drawdown. Pico = base del freno −30%."""
+        """Latest equity, peak and drawdown. The peak is the reference for the circuit breaker."""
         row = self.conn.execute("SELECT equity_mtm,peak FROM equity_history ORDER BY ts DESC LIMIT 1").fetchone()
         if not row:
             return {"equity": None, "peak": None, "drawdown": 0.0}
@@ -83,9 +87,12 @@ class DB:
         return {"equity": eq, "peak": peak, "drawdown": (eq/peak - 1) if peak else 0.0}
 
     def record_equity(self, equity_mtm, cash=0.0, exposure=None, regime=None):
-        """Guarda un punto de equity MTM, actualiza el pico y el drawdown. Devuelve el estado.
-        El pico se calcula desde `peak_since` (config): tras un ciclo de circuit breaker el pico
-        se re-ancla — si no, el drawdown quedaría congelado bajo el umbral y nunca se re-entraría."""
+        """Store an equity point, update peak and drawdown, and return the new state.
+
+        The peak is computed from the `peak_since` config key. After a circuit-breaker cycle the
+        peak is re-anchored; otherwise the drawdown would stay frozen below the threshold and the
+        robot would never re-enter.
+        """
         since = self.get_config("peak_since") or ""
         prev = self.conn.execute("SELECT MAX(peak) p FROM equity_history WHERE ts>=?", (since,)).fetchone()
         peak = max(equity_mtm, prev["p"] or equity_mtm)
@@ -96,10 +103,10 @@ class DB:
         return {"equity": equity_mtm, "peak": peak, "drawdown": dd}
 
     def reset_peak(self, note=None):
-        """Re-ancla el pico del drawdown a partir de AHORA (reanudación del circuit breaker)."""
-        self.set_config("peak_since", _now(), note=note or "re-anclaje de pico (CB resume)")
+        """Re-anchor the drawdown peak from now on (used when the circuit breaker resumes)."""
+        self.set_config("peak_since", _now(), note=note or "peak re-anchored (CB resume)")
 
-    # ── CARTERA: pesos objetivo, órdenes (idempotentes), posiciones ──
+    # ── Portfolio: target weights, orders, positions ──
     def record_target(self, rebalance_id, weights: dict, reasons: dict | None = None):
         ts = _now(); reasons = reasons or {}
         for sym, w in weights.items():
@@ -109,9 +116,11 @@ class DB:
     def record_order(self, client_order_id, symbol, side, otype, qty, mode,
                      rebalance_id=None, price=None, status="NEW", exchange_order_id=None, raw=None,
                      ts=None):
-        """Idempotente: si el client_order_id ya existe, NO se duplica.
-        `ts` = created_at REAL del exchange (si se omite, ahora) — así la auditoría no estampa
-        órdenes viejas con la hora del ciclo que las volcó."""
+        """Idempotent: an existing client_order_id is not inserted twice.
+
+        `ts` is the broker's real created_at (defaults to now), so old orders are not stamped
+        with the time of the cycle that happened to persist them.
+        """
         self._ex("INSERT OR IGNORE INTO order_log(client_order_id,exchange_order_id,rebalance_id,ts_created,"
                  "symbol,side,type,qty,price,status,mode,raw_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                  (client_order_id, exchange_order_id, rebalance_id, ts or _now(), symbol, side, otype,
@@ -124,13 +133,13 @@ class DB:
                  (ts or _now(), status, filled_qty, avg_fill_price, fee, client_order_id))
 
     def snapshot_positions(self, positions: dict):
-        """positions = {symbol:{qty,avg,...}}. Reemplaza el estado vivo de posiciones."""
+        """positions = {symbol: {qty, avg, ...}}. Upserts the live position state."""
         ts = _now()
         for sym, p in positions.items():
             self._ex("INSERT OR REPLACE INTO position(symbol,qty,avg_price,chandelier_stop,updated_at) "
                      "VALUES(?,?,?,?,?)", (sym, float(p.get("qty",0)), p.get("avg"), p.get("stop"), ts))
 
-    # ── IA, eventos, aportes, config ──
+    # ── Rationale and config ──
     def record_ai_explanation(self, summary, rebalance_id=None, model="deepseek", inputs=None, published=0):
         self._ex("INSERT INTO ai_explanation(ts,rebalance_id,summary,model,inputs_json,published) "
                  "VALUES(?,?,?,?,?,?)", (_now(), rebalance_id, summary, model,
@@ -144,7 +153,7 @@ class DB:
         row = self.conn.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
         return row["value"] if row else default
 
-    # ── lectura para dashboard / validación ──
+    # ── Reads for the dashboard ──
     def pending_reviews(self):
         return [dict(r) for r in self.conn.execute("SELECT * FROM v_pending_review").fetchall()]
 

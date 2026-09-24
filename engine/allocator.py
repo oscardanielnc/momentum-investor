@@ -1,45 +1,42 @@
 """
-investor — ALLOCATOR (cerebro) · ESTRATEGIA AGRESIVA MULTI-SECTOR (validada walk-forward 2026-06-29).
+Allocator: the signal of the multi-sector momentum robot.
 
-CONFIG BLOQUEADA:
-  - Universo: 36 acciones líderes de 7 sectores (semis, software, energía, salud, finanzas, consumo, comm).
-  - TOP-5 por momentum ajustado-riesgo (lookback 90d), EQUIPONDERADO (20% c/u), SIEMPRE invertido.
-  - SIN SHY / sin caja muerta. El "defensivo" = rotar al sector líder + trailing stop + Global66 (manual).
-  - TRAILING STOP 20% por posición (lo coloca el orquestador como orden nativa en Alpaca → "sale a tiempo").
-  - El robot opera sobre ALPACA = 100%. Global66 (~10-12%) es colchón fijo de Oscar, FUERA del robot.
+Configuration (chosen by the survivorship-biased research in research/backtest_v5..v9; see
+research/backtest_v10_pit.py for the point-in-time audit that later refuted it):
+  - Universe: 36 hand-picked large caps across 7 sectors.
+  - Hold the top 5 by risk-adjusted momentum (90-day lookback), equal weight, always invested.
+  - At most MAX_PER_SECTOR names per sector.
+  - A 20% trailing stop per position, placed by the orchestrator as a native Alpaca order.
 
-Validación: top-5 generaliza OOS (Calmar 1.38), diversifica ~3 sectores, en Bear-2022 rotó a energía
-(−18% vs −33% semis-solo), trailing cortó COVID a −22%. CAGR ~36% ciclo completo (OOS 42% del toro IA,
-no sostenible). compute_target() es PURO. load_prices() trae datos de Alpaca.
+compute_target() is pure. load_prices() fetches daily bars from Alpaca.
 """
 from __future__ import annotations
 import os, sys, time
 import numpy as np, pandas as pd
 
-# ── Universo multi-sector (idéntico al backtest validado) ────────────────────
+# Same universe as the research backtests.
 SEMIS    = ["MU","INTC","NVDA","AMD","WDC","STX","MRVL","TXN","AVGO","AMAT","LRCX","QCOM","ADI"]
 SOFTWARE = ["MSFT","ORCL","CRM","NOW","ADBE"]
-ENERGIA  = ["XOM","CVX","COP","SLB"]
-SALUD    = ["LLY","UNH","JNJ","ABBV"]
-FINANZAS = ["JPM","GS","V","MA"]
-CONSUMO  = ["AMZN","TSLA","COST","HD"]
+ENERGY   = ["XOM","CVX","COP","SLB"]
+HEALTH   = ["LLY","UNH","JNJ","ABBV"]
+FINANCE  = ["JPM","GS","V","MA"]
+CONSUMER = ["AMZN","TSLA","COST","HD"]
 COMM     = ["GOOGL","NFLX"]
 SECTOR = {**{s:"semis" for s in SEMIS}, **{s:"software" for s in SOFTWARE},
-          **{s:"energia" for s in ENERGIA}, **{s:"salud" for s in SALUD},
-          **{s:"finanzas" for s in FINANZAS}, **{s:"consumo" for s in CONSUMO},
+          **{s:"energy" for s in ENERGY}, **{s:"health" for s in HEALTH},
+          **{s:"financials" for s in FINANCE}, **{s:"consumer" for s in CONSUMER},
           **{s:"comm" for s in COMM}}
-UNIVERSE = SEMIS + SOFTWARE + ENERGIA + SALUD + FINANZAS + CONSUMO + COMM
+UNIVERSE = SEMIS + SOFTWARE + ENERGY + HEALTH + FINANCE + CONSUMER + COMM
 
-# ── Parámetros BLOQUEADOS (validados walk-forward) ───────────────────────────
-LB = 90              # lookback de momentum (días) — robusto 63-90
-TOPN = 5             # nº de líderes en cartera (equiponderado)
-MAX_PER_SECTOR = 4   # tope 80% por sector (máx 4 de 5) — óptimo validado: mata el 100%-concentrado
-TRAIL_PCT = 20.0     # trailing stop por posición (%) — lo coloca el orquestador en Alpaca
-VOLSHORT = 20        # ventana de vol para el ajuste por riesgo
+LB = 90              # momentum lookback (days); results were similar for 63-90
+TOPN = 5             # number of holdings, equal weight
+MAX_PER_SECTOR = 4   # at most 4 of 5 (80%) in one sector; avoids a fully concentrated book
+TRAIL_PCT = 20.0     # per-position trailing stop (%)
+VOLSHORT = 20        # volatility window for the risk adjustment
 
 
 def _riskadj_mom(P, R, sym, asof):
-    """Momentum (LB días) anualizado dividido por la vol → ~Sharpe del activo."""
+    """Annualized LB-day momentum divided by annualized volatility (a Sharpe-like score)."""
     h = P[sym].loc[:asof]
     if len(h) < LB + 5:
         return -9.0
@@ -49,8 +46,12 @@ def _riskadj_mom(P, R, sym, asof):
 
 
 def compute_target(prices: pd.DataFrame):
-    """PURO. Selecciona el TOP-5 por momentum ajustado-riesgo y lo equipondera (20% c/u).
-    Siempre invertido, sin caja. Devuelve (target_weights, meta). El orquestador decide si actuar."""
+    """Select the top TOPN symbols by risk-adjusted momentum, subject to the sector cap.
+
+    Pure function: `prices` is a date x symbol frame of adjusted closes. Returns
+    (target_weights, meta), where target_weights is equal weight across the selection and meta
+    carries the full ranking and scores used by rationale() and the orchestrator's hysteresis.
+    """
     P = prices.sort_index()
     R = P.pct_change()
     asof = P.index[-1]
@@ -58,7 +59,6 @@ def compute_target(prices: pd.DataFrame):
     scores = {s: _riskadj_mom(P, R, s, asof) for s in univ}
     ret3m = {s: float(P[s].iloc[-1] / P[s].iloc[-63] - 1) if len(P[s]) > 63 else 0.0 for s in univ}
     ranked = sorted(univ, key=lambda s: scores[s], reverse=True)
-    # selección top-N con TOPE POR SECTOR (máx MAX_PER_SECTOR por sector → mata el 100%-concentrado)
     top, sec_count = [], {}
     for s in ranked:
         sec = SECTOR.get(s, "?")
@@ -79,35 +79,35 @@ def compute_target(prices: pd.DataFrame):
 
 
 def rationale(target: dict, meta: dict, prev: dict | None = None):
-    """Justificación rica por redistribución (markdown + estructura) para el frontend/DB."""
+    """Explain a rebalance: returns (markdown, struct) for the dashboard and the database."""
     prev = prev or {}
     rows = []
     for s, w in sorted(target.items(), key=lambda x: -x[1]):
         sec = SECTOR.get(s, "?")
-        why = (f"momentum #{meta['ranking'].index(s)+1} de {len(meta['ranking'])} · "
+        why = (f"momentum #{meta['ranking'].index(s)+1} of {len(meta['ranking'])} · "
                f"score {meta['scores'].get(s)} · +{meta['ret3m'].get(s,0)*100:.0f}% 3m")
-        chg = "NUEVO" if prev.get(s, 0.0) < 0.005 else "mantiene"
+        chg = "NEW" if prev.get(s, 0.0) < 0.005 else "kept"
         rows.append({"symbol": s, "sector": sec, "weight": round(w, 4), "why": why, "change": chg})
     removed = [s for s in prev if s not in target and prev.get(s, 0) >= 0.01]
 
-    md = [f"### 🔄 Redistribución {meta['asof']}",
-          f"**Cartera:** top-{len(target)} momentum · **{meta['n_sectors']} sectores** "
-          f"({', '.join(meta['sectors'])}) · trailing stop {meta['trail_pct']:.0f}% · sin caja",
-          "", "| Activo | Sector | Peso | Por qué | Δ |", "|---|---|---|---|---|"]
+    md = [f"### Rebalance {meta['asof']}",
+          f"**Portfolio:** top-{len(target)} momentum · **{meta['n_sectors']} sectors** "
+          f"({', '.join(meta['sectors'])}) · trailing stop {meta['trail_pct']:.0f}% · fully invested",
+          "", "| Asset | Sector | Weight | Why | Change |", "|---|---|---|---|---|"]
     for r in rows:
-        md.append(f"| 🚀 **{r['symbol']}** | {r['sector']} | {r['weight']*100:.0f}% | {r['why']} | {r['change']} |")
+        md.append(f"| **{r['symbol']}** | {r['sector']} | {r['weight']*100:.0f}% | {r['why']} | {r['change']} |")
     if meta.get("next_best"):
         nb = meta["next_best"]
-        md.append(f"\n*Próximo en la fila: {nb} ({SECTOR.get(nb,'?')}, score {meta['scores'].get(nb)}) "
-                  f"— entra si supera a un líder.*")
+        md.append(f"\n*Next in line: {nb} ({SECTOR.get(nb,'?')}, score {meta['scores'].get(nb)}) "
+                  f"— enters if it overtakes a holding.*")
     if removed:
-        md.append(f"\n*Salieron: {', '.join(removed)} (perdieron momentum / stop activado).*")
+        md.append(f"\n*Removed: {', '.join(removed)} (lost momentum or stopped out).*")
     return "\n".join(md), {"context": {k: meta[k] for k in ("asof","leaders","sectors","n_sectors","trail_pct")},
                            "positions": rows, "removed": removed}
 
 
 def load_prices(lookback_days: int = 320):
-    """Cierres diarios ajustados de Alpaca (split+div) para todo el universo."""
+    """Split- and dividend-adjusted daily closes from Alpaca for the whole universe."""
     import requests
     from _env import load_env
     load_env()
@@ -137,7 +137,7 @@ def load_prices(lookback_days: int = 320):
 if __name__ == "__main__":
     try: sys.stdout.reconfigure(encoding="utf-8")
     except Exception: pass
-    print("Cargando precios (Alpaca, 36 acciones)…")
+    print(f"Loading prices from Alpaca ({len(UNIVERSE)} stocks)...")
     P = load_prices()
     w, meta = compute_target(P)
     md, _ = rationale(w, meta)

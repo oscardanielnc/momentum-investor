@@ -1,11 +1,14 @@
 """
-investor — Justificación en PROSA por IA (DeepSeek). Convierte el "por qué" estructurado de cada
-redistribución en 2-3 frases naturales, honestas y en español para la capa pública del dashboard.
+Optional natural-language explanation of each rebalance.
 
-Self-contained (REST, sin dependencias nuevas) → desplegable en la VM sin arrastrar opportunity_alert.
-Motor por env AI_ENGINE (default deepseek). Clave DEEPSEEK_API_KEY. BLINDADO: si no hay clave o la
-API falla, devuelve None y el orquestador usa el texto determinista (la prosa es un "plus", nunca un
-punto único de fallo).
+Turns the structured rationale produced by allocator.rationale() into two or three plain
+sentences for the dashboard. Uses plain REST for OpenAI-compatible providers, so no extra
+dependency is needed.
+
+Provider: AI_ENGINE (deepseek | glm | claude, default deepseek) with the matching API key.
+Fail-safe by design: with no key, or if the API call fails, explain_prose() returns None and
+the orchestrator stores the deterministic markdown instead. The prose is never a single point
+of failure.
 """
 from __future__ import annotations
 import os, logging
@@ -19,10 +22,10 @@ _BASES = {"deepseek": "https://api.deepseek.com", "glm": "https://api.z.ai/api/o
 _MODELS = {"deepseek": "deepseek-chat", "glm": "glm-4.7-flash"}
 
 SYSTEM = (
-    "Eres el analista del robot de inversión 'investor'. Explica de forma DIRECTA, honesta y breve "
-    "(2-3 frases, español) por qué el robot tiene esta cartera hoy. Menciona los líderes y sus sectores, "
-    "qué cambió respecto al ciclo anterior y el régimen (cuántos sectores, trailing stop). NO hagas "
-    "promesas de rentabilidad ni des consejo financiero. Tono sobrio de reporte, sin exagerar."
+    "You are the analyst for the 'investor' paper-trading robot. In 2-3 short, direct, honest "
+    "sentences, explain why the robot holds this portfolio today. Mention the holdings and their "
+    "sectors, what changed since the previous cycle, and the regime (number of sectors, trailing "
+    "stop). Do not promise returns or give financial advice. Sober reporting tone."
 )
 
 
@@ -37,41 +40,41 @@ def _engine_key():
     return eng, ""
 
 
-def _build_prompt(struct: dict, meta: dict) -> str:
+def _build_prompt(struct: dict) -> str:
     ctx = struct.get("context", {})
     pos = struct.get("positions", [])
     removed = struct.get("removed", [])
-    líneas = [f"- {p['symbol']} ({p.get('sector','?')}): {p.get('why','')} [{p.get('change','')}]" for p in pos]
+    lines = [f"- {p['symbol']} ({p.get('sector','?')}): {p.get('why','')} [{p.get('change','')}]" for p in pos]
     return (
-        f"Fecha: {ctx.get('asof')}\n"
-        f"Cartera (top-{len(pos)}, equiponderada, {ctx.get('n_sectors','?')} sectores, "
-        f"trailing stop {ctx.get('trail_pct','?')}%):\n" + "\n".join(líneas) +
-        (f"\nSalieron del top-5: {', '.join(removed)}" if removed else "") +
-        "\n\nEscribe la explicación en 2-3 frases."
+        f"Date: {ctx.get('asof')}\n"
+        f"Portfolio (top-{len(pos)}, equal weight, {ctx.get('n_sectors','?')} sectors, "
+        f"trailing stop {ctx.get('trail_pct','?')}%):\n" + "\n".join(lines) +
+        (f"\nDropped from the top 5: {', '.join(removed)}" if removed else "") +
+        "\n\nWrite the explanation in 2-3 sentences."
     )
 
 
-def explain_prose(struct: dict, meta: dict, max_tokens: int = 220) -> str | None:
-    """Devuelve la prosa de IA, o None si no hay clave / falla la API (→ fallback determinista)."""
+def explain_prose(struct: dict, max_tokens: int = 220) -> str | None:
+    """Return the AI-written explanation, or None if no key is set or the call fails."""
     eng, key = _engine_key()
     if not key:
-        log.info("[ai_explain] sin clave para %s → fallback determinista", eng)
+        log.info("[ai_explain] no key for %s, using deterministic fallback", eng)
         return None
     try:
         if eng == "claude":
-            return _claude(key, struct, meta, max_tokens)
-        return _openai_compat(eng, key, struct, meta, max_tokens)
+            return _claude(key, struct, max_tokens)
+        return _openai_compat(eng, key, struct, max_tokens)
     except Exception as e:
-        log.warning("[ai_explain] %s falló: %s → fallback", eng, e)
+        log.warning("[ai_explain] %s failed: %s, using fallback", eng, e)
         return None
 
 
-def _openai_compat(eng, key, struct, meta, max_tokens):
+def _openai_compat(eng, key, struct, max_tokens):
     base = os.environ.get(f"{eng.upper()}_BASE_URL", _BASES.get(eng, _BASES["deepseek"]))
     model = os.environ.get("AI_MODEL_CHEAP") or _MODELS.get(eng, _MODELS["deepseek"])
     payload = {"model": model, "max_tokens": max_tokens, "temperature": 0.4, "stream": False,
                "messages": [{"role": "system", "content": SYSTEM},
-                            {"role": "user", "content": _build_prompt(struct, meta)}]}
+                            {"role": "user", "content": _build_prompt(struct)}]}
     r = requests.post(base.rstrip("/") + "/chat/completions",
                       json=payload, headers={"Authorization": f"Bearer {key}"}, timeout=40)
     if r.status_code != 200:
@@ -80,10 +83,10 @@ def _openai_compat(eng, key, struct, meta, max_tokens):
     return txt or None
 
 
-def _claude(key, struct, meta, max_tokens):
+def _claude(key, struct, max_tokens):
     import anthropic
     c = anthropic.Anthropic(api_key=key)
     m = c.messages.create(model=os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001"),
                           max_tokens=max_tokens, system=SYSTEM,
-                          messages=[{"role": "user", "content": _build_prompt(struct, meta)}])
+                          messages=[{"role": "user", "content": _build_prompt(struct)}])
     return (m.content[0].text or "").strip() or None

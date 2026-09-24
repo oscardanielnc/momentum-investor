@@ -1,9 +1,12 @@
 """
-investor — Cargador de entorno portable (mini-dotenv, sin dependencias).
-Carga investor/.env (gitignored) a os.environ UNA vez, sin pisar variables ya definidas.
-Así el código lee SIEMPRE de os.environ y nunca hay rutas/claves hardcodeadas (repo público + VM).
+Minimal, dependency-free .env loader.
 
-Opcional: INVESTOR_FALLBACK_ENV puede apuntar a otro .env (p.ej. el de opportunity_alert en dev).
+Loads the project's .env (gitignored) into os.environ once, without overriding variables that
+are already set. All code reads configuration from os.environ, so no keys or paths are
+hardcoded.
+
+Optional: INVESTOR_FALLBACK_ENV can point to a second .env file that is read after the
+project one (useful in development to share keys with another local project).
 """
 import os
 
@@ -23,14 +26,14 @@ def _parse_into_environ(path):
                 k, v = line.split("=", 1)
                 k = k.strip()
                 v = v.split(" #")[0].strip().strip('"').strip("'")
-                if k and k not in os.environ:        # no pisar lo ya definido (env real manda)
+                if k and k not in os.environ:        # the real environment always wins
                     os.environ[k] = v
     except Exception:
         pass
 
 
 def load_env():
-    """Idempotente. Carga .env del proyecto + el fallback opcional. Llamar al inicio de cada módulo."""
+    """Idempotent. Loads the project .env plus the optional fallback file."""
     global _loaded
     if _loaded:
         return

@@ -1,21 +1,22 @@
 """
-investor — ORQUESTADOR (el director). Une allocator (cerebro) + execution_alpaca (manos) +
-db (memoria) en los 3 ritmos, con los patrones anti-error probados en kepler.
+Orchestrator: runs the allocator, the Alpaca execution layer and the database on three clocks.
 
-Ritmos:
-  ⚡ Heartbeat (cada HEARTBEAT_S, ~15min): lee equity MTM → registra → drawdown → circuit breaker.
-  🌅 Diario: recalcula pesos; actúa SOLO si algo cruza la banda 5% (anti-whipsaw).
-  📅 Mensual: rebalanceo estratégico completo (la config validada).
+Clocks:
+  Heartbeat (every HEARTBEAT_S, 15 min by default): read MTM equity, record it, update the
+    drawdown and run the circuit breaker; verify every position still has its trailing stop.
+  Daily: re-rank; rotate only when a holding falls outside the top EXIT_RANK (hysteresis).
+  Monthly: reset to the exact top 5, unless membership is unchanged and drift is below
+    REBAL_BAND.
 
-Anti-errores:
-  - "equity ilegible → omite ciclo" (nunca opera con un valor falso).
-  - cada ciclo en try/except → loguea y sigue (el loop JAMÁS se cae por un fallo puntual).
-  - circuit breaker intradía: si el drawdown cruza el umbral, flatten YA (salida ante eventos).
-  - lock de instancia única (no dos robots a la vez).
-  - DRY_RUN por defecto. Heartbeat watchdog en la tabla heartbeat.
+Safety rules:
+  - Unreadable equity means the cycle is skipped; the robot never trades on a made-up value.
+  - Every cycle runs inside try/except: a single failure is logged, the loop keeps going.
+  - Intraday circuit breaker: if drawdown crosses CB_HALT, flatten immediately.
+  - Single-instance lock, so two robots never trade the same account.
+  - DRY_RUN by default. Heartbeats are recorded in the heartbeat table as a watchdog.
 
-Run:  python -m engine.orchestrator           # un ciclo (para probar)
-      python -m engine.orchestrator --loop     # loop continuo
+Run:  python engine/orchestrator.py           # one cycle
+      python engine/orchestrator.py --loop    # continuous loop
 """
 from __future__ import annotations
 import json, os, sys, time, atexit
@@ -27,28 +28,28 @@ import ai_explain
 import execution_alpaca as ex
 from db import DB
 
-HEARTBEAT_S = int(os.environ.get("INVESTOR_HEARTBEAT_S", "900"))   # 15 min
-CB_HALT   = float(os.environ.get("INVESTOR_CB_HALT", "0.25"))      # flatten si dd ≤ −25%
-CB_RESUME = float(os.environ.get("INVESTOR_CB_RESUME", "0.15"))    # reanuda al recuperar a −15%
-REBAL_BAND = float(os.environ.get("INVESTOR_REBAL_BAND", "0.05"))  # drift de peso que dispara re-equiponderar (anti-whipsaw)
-EXIT_RANK  = int(os.environ.get("INVESTOR_EXIT_RANK", "12"))        # banda de histéresis del DIARIO (validada v9): mantiene un nombre mientras siga en el top-EXIT_RANK
+HEARTBEAT_S = int(os.environ.get("INVESTOR_HEARTBEAT_S", "900"))
+CB_HALT   = float(os.environ.get("INVESTOR_CB_HALT", "0.25"))      # flatten when dd <= -25%
+CB_RESUME = float(os.environ.get("INVESTOR_CB_RESUME", "0.15"))    # resume when back to -15%
+REBAL_BAND = float(os.environ.get("INVESTOR_REBAL_BAND", "0.05"))  # monthly drift that triggers re-weighting
+EXIT_RANK  = int(os.environ.get("INVESTOR_EXIT_RANK", "12"))        # daily hysteresis band (research/backtest_v9)
 _LOCK = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "orchestrator.lock")
 
 
 def _now():
     return datetime.now(timezone.utc)
 
-# ── Lock de instancia única ──────────────────────────────────────────────────
+# ── Single-instance lock ─────────────────────────────────────────────────────
 def _pid_alive(pid):
-    """¿El proceso `pid` sigue vivo? (robusto a systemd restarts y SIGTERM sin atexit)."""
+    """Whether process `pid` is still running (works across systemd restarts and SIGTERM)."""
     try:
-        os.kill(pid, 0)            # señal 0 = solo comprobar existencia
+        os.kill(pid, 0)            # signal 0 only checks existence
     except ProcessLookupError:
-        return False               # no existe → lock huérfano
+        return False
     except PermissionError:
-        return True                # existe (otro dueño)
+        return True                # exists, owned by someone else
     except Exception:
-        return True                # no se puede saber → conservador
+        return True                # unknown: assume alive, the conservative choice
     return True
 
 
@@ -60,8 +61,8 @@ def acquire_lock():
         except Exception:
             old = None
         if old and old != os.getpid() and _pid_alive(old):
-            raise RuntimeError(f"Otra instancia activa (PID {old}). Aborto.")
-        # lock huérfano (proceso muerto, p.ej. tras un restart de systemd) → lo reclamo
+            raise RuntimeError(f"Another instance is running (PID {old}). Aborting.")
+        # stale lock from a dead process (e.g. after a systemd restart): take it over
     with open(_LOCK, "w") as f:
         f.write(str(os.getpid()))
     atexit.register(lambda: os.path.exists(_LOCK) and os.remove(_LOCK))
@@ -72,7 +73,7 @@ def touch_lock():
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def current_weights(equity):
-    """Pesos actuales {sym: mv/equity} desde las posiciones reales ({} en DRY_RUN)."""
+    """Current weights {sym: mv/equity} from live positions ({} in DRY_RUN)."""
     pos = ex.get_positions()
     if not pos or not equity:
         return {}
@@ -80,22 +81,26 @@ def current_weights(equity):
 
 
 def _cb_resume(d: DB, why):
-    """Reanuda tras un HALT: re-ancla el pico al equity actual (si no, el dd seguiría bajo el umbral
-    y se re-haltearía al instante) y fuerza el diario del próximo ciclo para re-entrar al top-5."""
+    """Resume after a halt. Re-anchor the peak to current equity (otherwise the drawdown would
+    still be past the threshold and trigger again at once) and force the next daily cycle so
+    the robot re-enters the top 5."""
     d.set_config("halted", "false")
     d.set_config("cb_ref", "")
     d.reset_peak(note=f"CB resume: {why}")
-    d.set_config("last_daily", "")            # el próximo ciclo re-entra (diario)
-    d.review("cb_resume", f"Circuit breaker RESUME: {why}. Pico re-anclado; re-entrada en el próximo ciclo",
+    d.set_config("last_daily", "")
+    d.review("cb_resume", f"Circuit breaker RESUME: {why}. Peak re-anchored; re-entry next cycle",
              severity="warning")
-    d.log("INFO", "circuit_breaker", f"RESUME → {why} · pico re-anclado · re-entrada próximo ciclo")
+    d.log("INFO", "circuit_breaker", f"RESUME: {why} · peak re-anchored · re-entry next cycle")
 
 
 def check_circuit_breaker(d: DB, state):
-    """Salida intradía ante eventos: flatten si el drawdown cruza el umbral. Persistente.
-    Reanudación AUTOMÁTICA: en el HALT se fotografía la canasta vendida; mientras dura el HALT se
-    calcula el equity HIPOTÉTICO (si no hubiéramos vendido) con los últimos precios — al recuperar
-    el nivel de RESUME, re-entra solo. (El equity real en caja queda plano: no sirve para medir.)"""
+    """Flatten if the drawdown crosses CB_HALT. The halt persists across restarts.
+
+    Resume is automatic. At halt time the sold basket is recorded; while halted, a hypothetical
+    equity (as if the basket had been kept) is computed from latest prices, and the robot
+    re-enters once that recovers to the RESUME level. Real equity sits flat in cash during a
+    halt, so it cannot be used to measure recovery.
+    """
     dd = state["drawdown"] or 0.0
     halted = d.get_config("halted", "false") == "true"
     if not halted and dd <= -CB_HALT:
@@ -105,12 +110,12 @@ def check_circuit_breaker(d: DB, state):
                                            "peak": state["peak"], "ts": _now().isoformat()}))
         ex.flatten()
         d.set_config("halted", "true")
-        d.review("cb_activado", f"Circuit breaker HALT: drawdown {dd*100:.1f}% → flatten", severity="critical")
-        d.log("CRITICAL", "circuit_breaker", f"HALT dd={dd*100:.1f}% → liquidado a caja")
+        d.review("cb_halt", f"Circuit breaker HALT: drawdown {dd*100:.1f}% -> flatten", severity="critical")
+        d.log("CRITICAL", "circuit_breaker", f"HALT dd={dd*100:.1f}% -> liquidated to cash")
         return True
     if halted:
-        if dd >= -CB_RESUME:                  # el equity real recuperó (aportes / test / dd leve)
-            _cb_resume(d, f"drawdown real {dd*100:.1f}% sobre el umbral")
+        if dd >= -CB_RESUME:                  # real equity recovered (deposit, test, shallow dd)
+            _cb_resume(d, f"real drawdown {dd*100:.1f}% above the threshold")
             return False
         try:
             ref = json.loads(d.get_config("cb_ref") or "null")
@@ -122,17 +127,17 @@ def check_circuit_breaker(d: DB, state):
             if ratios:
                 hypo = ref["equity"] * (sum(ratios) / len(ratios))
                 if hypo >= ref["peak"] * (1 - CB_RESUME):
-                    _cb_resume(d, f"canasta vendida recuperó a {hypo/ref['peak']*100-100:+.1f}% del pico "
-                                  f"(umbral −{CB_RESUME*100:.0f}%)")
+                    _cb_resume(d, f"sold basket recovered to {hypo/ref['peak']*100-100:+.1f}% of peak "
+                                  f"(threshold -{CB_RESUME*100:.0f}%)")
                     return False
-                d.log("INFO", "circuit_breaker", f"HALT vigente · equity hipotético "
-                      f"{hypo/ref['peak']*100-100:+.1f}% del pico (resume en −{CB_RESUME*100:.0f}%)")
+                d.log("INFO", "circuit_breaker", f"HALT in effect · hypothetical equity "
+                      f"{hypo/ref['peak']*100-100:+.1f}% of peak (resume at -{CB_RESUME*100:.0f}%)")
     return halted
 
 
 def place_trailing_stops(d: DB):
-    """Coloca un trailing stop nativo (TRAIL_PCT%) por cada posición → 'sale a tiempo' aunque el
-    bot esté caído. Las órdenes viejas ya las canceló rebalance(). Blindado: no tumba el ciclo."""
+    """Place a native TRAIL_PCT% trailing stop for every position, so exits work even if the
+    robot is down. rebalance() has already cancelled the old orders. Never raises."""
     if ex.DRY_RUN:
         return 0
     n = 0
@@ -143,19 +148,19 @@ def place_trailing_stops(d: DB):
                 continue
             if ex.place_trailing_stop(s, q, allocator.TRAIL_PCT) is not None:
                 n += 1
-            else:   # rechazo HTTP (p.ej. la compra aún no liquida) → dejar rastro; el heartbeat lo repara
-                d.log_error("orchestrator", f"trailing stop {s} rechazado por Alpaca ({q} acc) — "
-                            "la reconciliación del heartbeat lo repondrá")
+            else:   # HTTP rejection (e.g. the buy has not settled yet); the heartbeat repairs it
+                d.log_error("orchestrator", f"trailing stop {s} rejected by Alpaca ({q} sh); "
+                            "the heartbeat reconciliation will replace it")
         except Exception as e:
-            d.log_error("orchestrator", f"trailing stop {s} falló", e)
-    d.log("INFO", "orchestrator", f"trailing stops colocados: {n} (a {allocator.TRAIL_PCT:.0f}%)")
+            d.log_error("orchestrator", f"trailing stop {s} failed", e)
+    d.log("INFO", "orchestrator", f"trailing stops placed: {n} (at {allocator.TRAIL_PCT:.0f}%)")
     return n
 
 
 def reconcile_stops(d: DB):
-    """Red de seguridad CADA heartbeat: toda posición debe tener trailing stop vivo por sus acciones
-    enteras. Si falta cobertura (stop rechazado en el rebalanceo, cancelado a mano, parcial), se
-    repone la diferencia y se deja rastro. Blindado: no tumba el ciclo."""
+    """Safety net on every heartbeat: every position must be covered by live trailing stops for
+    its whole shares. Missing coverage (rejected at rebalance, cancelled by hand, partial) is
+    replaced and logged. Never raises."""
     if ex.DRY_RUN:
         return 0
     try:
@@ -170,35 +175,33 @@ def reconcile_stops(d: DB):
                 continue
             if ex.place_trailing_stop(s, missing, allocator.TRAIL_PCT) is not None:
                 fixed += 1
-                d.log("WARN", "orchestrator", f"stop faltante repuesto: {s} {missing} acc a {allocator.TRAIL_PCT:.0f}%")
-                d.review("stop_reparado", f"{s}: trailing stop repuesto ({missing} acciones sin cobertura)",
+                d.log("WARN", "orchestrator", f"missing stop replaced: {s} {missing} sh at {allocator.TRAIL_PCT:.0f}%")
+                d.review("stop_repaired", f"{s}: trailing stop replaced ({missing} uncovered shares)",
                          symbol=s, severity="warning")
             else:
-                d.log_error("orchestrator", f"{s} sin trailing stop ({missing} acc) y la reposición falló")
+                d.log_error("orchestrator", f"{s} has no trailing stop ({missing} sh) and replacement failed")
         return fixed
     except Exception as e:
-        d.log_error("orchestrator", "reconciliación de stops falló", e)
+        d.log_error("orchestrator", "stop reconciliation failed", e)
         return 0
 
 
 def _iso19(ts):
-    """Normaliza timestamps ISO a 'YYYY-MM-DDTHH:MM:SS' (UTC) para comparar/guardar de forma estable."""
+    """Normalize ISO timestamps to 'YYYY-MM-DDTHH:MM:SS' (UTC) for stable comparison."""
     return (ts or "")[:19]
 
 
 def persist_traceability(d: DB, rb_id, since_iso=None):
-    """Trazabilidad completa: vuelca las órdenes 'inv-*' de Alpaca a order_log (idempotente por
-    client_order_id) + snapshotea las posiciones vivas. Cada orden se guarda con SU created_at real
-    y el rebalance_id se atribuye SOLO a las creadas desde `since_iso` (inicio de este rebalanceo) —
-    antes se estampaba todo con la hora/ciclo del volcado y contaminaba la auditoría.
-    Blindado: nunca tumba el ciclo."""
+    """Copy this robot's 'inv-*' orders from Alpaca into order_log (idempotent) and snapshot
+    live positions. Each order keeps its real created_at, and rb_id is attributed only to orders
+    created since `since_iso` (the start of this rebalance). Never raises."""
     if ex.DRY_RUN:
         return
     try:
         mode = ex.mode_str()
         for o in ex.list_orders(limit=50):
             coid = o.get("client_order_id", "")
-            if not coid.startswith("inv-"):      # solo lo que colocó este robot
+            if not coid.startswith("inv-"):      # only orders placed by this robot
                 continue
             st = (o.get("status") or "new").upper()
             qty = float(o.get("qty") or o.get("filled_qty") or 0)
@@ -207,7 +210,7 @@ def persist_traceability(d: DB, rb_id, since_iso=None):
             d.record_order(coid, o["symbol"], o["side"], o["type"], qty, mode,
                            rebalance_id=rb, price=o.get("limit_price"),
                            status=st, exchange_order_id=o.get("id"), raw=o,
-                           ts=created or None)                                # INSERT OR IGNORE
+                           ts=created or None)
             d.update_order(coid, st,
                            filled_qty=(float(o["filled_qty"]) if o.get("filled_qty") else None),
                            avg_fill_price=(float(o["filled_avg_price"]) if o.get("filled_avg_price") else None),
@@ -215,19 +218,22 @@ def persist_traceability(d: DB, rb_id, since_iso=None):
         d.snapshot_positions({s: {"qty": p["qty"], "avg": p["avg"]}
                               for s, p in ex.get_positions().items()})
     except Exception as e:
-        d.log_error("orchestrator", "persistencia de órdenes/posiciones falló", e)
+        d.log_error("orchestrator", "persisting orders/positions failed", e)
 
 
 def hysteresis_target(held, ranking):
-    """Banda de histéresis del DIARIO (validada v9, exit_rank=12): mantiene los nombres tenidos que
-    sigan dentro del top-EXIT_RANK; rellena hasta TOPN con los mejores por ranking, respetando el tope
-    por sector. Devuelve la lista de símbolos objetivo. Evita el churn del borde #5/#6 (57% de días)."""
+    """Daily rank hysteresis (research/backtest_v9, exit_rank=12).
+
+    Keep every held name still ranked within the top EXIT_RANK; fill the remaining slots up to
+    TOPN with the best-ranked names, respecting the sector cap. Returns the target symbol list.
+    Without the band, top-5 membership changed on most days and the churn erased the edge.
+    """
     rank = {s: i + 1 for i, s in enumerate(ranking)}
-    top = [s for s in held if rank.get(s, 10**9) <= EXIT_RANK]      # se quedan los que siguen en la banda
+    top = [s for s in held if rank.get(s, 10**9) <= EXIT_RANK]
     sec_count = {}
     for s in top:
         sec_count[allocator.SECTOR.get(s, "?")] = sec_count.get(allocator.SECTOR.get(s, "?"), 0) + 1
-    for s in ranking:                                              # rellena huecos por mejor momentum
+    for s in ranking:
         if len(top) >= allocator.TOPN:
             break
         sec = allocator.SECTOR.get(s, "?")
@@ -238,110 +244,109 @@ def hysteresis_target(held, ranking):
 
 
 def do_rebalance(d: DB, reason, equity, force=False):
-    """Robot = ALPACA al 100% · estrategia agresiva multi-sector top-5. Rebalancea + coloca trailing
-    stops. MENSUAL (force): reset completo al top-5 (con tope sector), salvo drift < banda. DIARIO:
-    histéresis de rango — solo rota si un nombre cae fuera del top-EXIT_RANK (anti-churn, validado v9).
-    Global66 NO interviene (colchón personal fijo de Oscar, fuera del robot)."""
+    """Rebalance and place trailing stops.
+
+    force=True (monthly): reset to the exact top 5 with the sector cap, unless membership is
+    unchanged and drift is below REBAL_BAND. force=False (daily): rank hysteresis; rotate only
+    when a holding falls outside the top EXIT_RANK. Returns orders placed or a skip reason.
+    """
     if not ex.DRY_RUN and not ex.market_open():
-        d.log("INFO", "orchestrator", f"{reason}: mercado cerrado, pospongo")
+        d.log("INFO", "orchestrator", f"{reason}: market closed, postponing")
         return "closed"
     prices = allocator.load_prices()
     if prices.empty or prices.shape[1] < 5:
-        d.log_error("orchestrator", "panel de precios insuficiente")
+        d.log_error("orchestrator", "not enough price data")
         return "no_data"
     cur = current_weights(equity)
     target, meta = allocator.compute_target(prices)
     held = {s for s, w in cur.items() if w > 0.01}
     if force:
-        # MENSUAL: reset al top-5. Salta si nada cambió y el drift es chico (anti-whipsaw).
         drift = max((abs(w - cur.get(s, 0.0)) for s, w in target.items()), default=1.0)
         if set(target) == held and drift < REBAL_BAND:
-            d.log("INFO", "orchestrator", f"{reason}: top-5 sin cambios ({sorted(held)}), "
-                  f"drift {drift*100:.1f}% < banda {REBAL_BAND*100:.0f}% → no opero")
+            d.log("INFO", "orchestrator", f"{reason}: top-5 unchanged ({sorted(held)}), "
+                  f"drift {drift*100:.1f}% < band {REBAL_BAND*100:.0f}%, no trade")
             return "skip"
         final_syms = list(target)
     else:
-        # DIARIO: histéresis de rango. Solo rota si un nombre tenido sale del top-EXIT_RANK.
         final_syms = hysteresis_target(held, meta["ranking"])
         if held and set(final_syms) == held:
-            d.log("INFO", "orchestrator", f"{reason}: cartera dentro de la banda top-{EXIT_RANK} "
-                  f"({sorted(held)}) → no roto", {"exit_rank": EXIT_RANK})
+            d.log("INFO", "orchestrator", f"{reason}: portfolio within the top-{EXIT_RANK} band "
+                  f"({sorted(held)}), no rotation", {"exit_rank": EXIT_RANK})
             return "skip"
     final = {s: round(1.0 / len(final_syms), 4) for s in final_syms} if final_syms else {}
-    reasons = {s: ("líder top-5" if s in meta["leaders"] else f"dentro de banda top-{EXIT_RANK}")
+    reasons = {s: ("top-5 leader" if s in meta["leaders"] else f"within top-{EXIT_RANK} band")
                for s in final}
     t_start = _now()
     rb_id = f"rb-{t_start.strftime('%Y%m%d-%H%M')}"
     d.record_target(rb_id, final, reasons)
     placed = ex.rebalance(final, equity)
     if not ex.DRY_RUN:
-        time.sleep(2)                 # dejar que llenen las market orders antes del trailing stop
+        time.sleep(2)                 # let market orders fill before placing stops
         place_trailing_stops(d)
-    # vuelca órdenes reales a order_log (ts reales; rb_id solo para las de ESTE rebalanceo) + snapshot
     persist_traceability(d, rb_id, since_iso=t_start.isoformat())
     md, struct = allocator.rationale(final, meta, prev=cur)
-    prose = ai_explain.explain_prose(struct, meta)          # prosa DeepSeek (None si falla)
-    summary = (f"_{prose}_\n\n{md}" if prose else md)        # prosa + tabla; o solo tabla
+    prose = ai_explain.explain_prose(struct)
+    summary = (f"_{prose}_\n\n{md}" if prose else md)
     d.record_ai_explanation(summary, rebalance_id=rb_id, model=("deepseek" if prose else "deterministic"),
                             inputs=struct)
-    d.log("INFO", "orchestrator", f"rebalanceo {reason}: {placed} órden(es) · "
-          f"cartera {sorted(final)} · top-5 {meta['leaders']}", {"rb": rb_id})
+    d.log("INFO", "orchestrator", f"{reason} rebalance: {placed} order(s) · "
+          f"portfolio {sorted(final)} · top-5 {meta['leaders']}", {"rb": rb_id})
     return placed
 
 
-# ── Un ciclo completo (testeable) ────────────────────────────────────────────
+# ── One full cycle (testable) ────────────────────────────────────────────────
 def run_cycle(d: DB, now=None):
+    """Run one heartbeat, plus the monthly or daily rebalance when due. Returns a status string."""
     now = now or _now()
     t0 = time.time()
     try:
         acc = ex.get_account()
         equity = float(acc["equity"]) if acc and acc.get("equity") is not None else None
         if equity is None:
-            d.heartbeat("heartbeat", status="skipped", skip_reason="equity_ilegible")
-            d.log("WARN", "orchestrator", "equity ilegible → omito ciclo (no opero con valor falso)")
+            d.heartbeat("heartbeat", status="skipped", skip_reason="equity_unreadable")
+            d.log("WARN", "orchestrator", "equity unreadable, skipping cycle (never trade on a wrong value)")
             return "skipped"
         cash = float(acc.get("cash", 0) or 0)
         exposure = (float(acc.get("long_market_value") or 0) / equity) if equity else 0.0
-        state = d.record_equity(equity, cash=cash, exposure=exposure)   # −30% sobre el capital de ALPACA (el 100% del robot)
+        state = d.record_equity(equity, cash=cash, exposure=exposure)
         halted = check_circuit_breaker(d, state)
         d.heartbeat("heartbeat", status="ok", duration_ms=int((time.time()-t0)*1000), equity=equity)
         touch_lock()
         if halted:
-            d.log("WARN", "orchestrator", "en HALT (circuit breaker) → no abro posiciones")
+            d.log("WARN", "orchestrator", "HALT in effect (circuit breaker), not opening positions")
             return "halted"
-        reconcile_stops(d)            # red de seguridad: toda posición con su trailing stop vivo
-        # programación: mensual (cambio de mes) o diario
+        reconcile_stops(d)
         ym, today = now.strftime("%Y-%m"), now.date().isoformat()
         if d.get_config("last_monthly") != ym:
-            r = do_rebalance(d, "mensual", equity, force=True)
+            r = do_rebalance(d, "monthly", equity, force=True)
             if r not in ("closed", "no_data"):
                 d.set_config("last_monthly", ym)
-            return f"mensual:{r}"
+            return f"monthly:{r}"
         if d.get_config("last_daily") != today:
-            r = do_rebalance(d, "diario", equity, force=False)
+            r = do_rebalance(d, "daily", equity, force=False)
             if r not in ("closed", "no_data"):
                 d.set_config("last_daily", today)
-            return f"diario:{r}"
+            return f"daily:{r}"
         return "heartbeat_only"
     except Exception as e:
-        d.log_error("orchestrator", "fallo en run_cycle", e)
+        d.log_error("orchestrator", "run_cycle failed", e)
         return "error"
 
 
 def main():
     d = DB()
     d.set_config("mode", ex.mode_str())
-    d.log("INFO", "orchestrator", f"arranque · modo {ex.mode_str()} · heartbeat {HEARTBEAT_S}s")
+    d.log("INFO", "orchestrator", f"start · mode {ex.mode_str()} · heartbeat {HEARTBEAT_S}s")
     loop = "--loop" in sys.argv
     if not loop:
-        print("Un ciclo:", run_cycle(d)); d.close(); return
+        print("One cycle:", run_cycle(d)); d.close(); return
     acquire_lock()
     try:
         while True:
-            print(_now().isoformat(), "→", run_cycle(d))
+            print(_now().isoformat(), "->", run_cycle(d))
             time.sleep(HEARTBEAT_S)
     except KeyboardInterrupt:
-        d.log("INFO", "orchestrator", "shutdown ordenado (KeyboardInterrupt)")
+        d.log("INFO", "orchestrator", "clean shutdown (KeyboardInterrupt)")
     finally:
         d.close()
 

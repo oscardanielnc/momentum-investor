@@ -1,25 +1,23 @@
 """
-investor — CAPA DE EJECUCIÓN (ALPACA). Venue definitivo (decisión 2026-06-29).
-Re-port del patrón de kepler/execution_spot a la Trading API de Alpaca.
+Execution layer for the Alpaca Trading API.
 
-Por qué Alpaca (vs Binance/eToro): comisión $0 en acciones/ETFs, API nativa de algotrading,
-+7000 acciones/ETFs (cubre todos los buckets), órdenes FRACCIONALES por $ (ideal para $500 y
-pesos objetivo), y el equity MTM lo da la cuenta directo (no hay que calcularlo).
+Alpaca offers commission-free stocks and ETFs, a native trading API, and fractional orders by
+dollar amount, which maps directly to target weights. Account equity comes from the broker
+already marked to market.
 
-Modos (env):
-  INVESTOR_DRY_RUN=true   → solo loguea, no envía. DEFAULT seguro.
-  INVESTOR_ALPACA_LIVE=false (default) → paper-api.alpaca.markets (cuenta de práctica).
-  INVESTOR_ALPACA_LIVE=true            → api.alpaca.markets (REAL). Solo tras validar demo.
+Modes (environment):
+  INVESTOR_DRY_RUN=true (default)       log only, send nothing.
+  INVESTOR_ALPACA_LIVE=false (default)  paper-api.alpaca.markets (paper account).
+  INVESTOR_ALPACA_LIVE=true             api.alpaca.markets (live account).
 
-Claves: ALPACA_API_KEY / ALPACA_SECRET_KEY del entorno; si no, se leen de opportunity_alert/.env
-(paper). Para REAL, Oscar pone SUS claves en el .env de investor.
+Keys: ALPACA_API_KEY / ALPACA_SECRET_KEY from the environment (see engine/_env.py).
 
-Notas Alpaca:
-  - Órdenes notional (por $) y fraccionales DEBEN ser type=market, tif=day. Para pesos objetivo
-    eso es ideal (rebalanceo por valor). ETFs líquidos + $0 comisión → slippage mínimo.
-  - Chandelier = type=trailing_stop NATIVO (trail_percent) → vive en el exchange.
-  - flatten = DELETE /v2/positions (liquida todo) para el HALT del circuit breaker.
-  - LONG-ONLY: nunca se vende más de lo que se tiene.
+Alpaca specifics:
+  - Notional (dollar) and fractional orders must be type=market, tif=day.
+  - Trailing stops are native orders (type=trailing_stop, trail_percent), so they live at the
+    broker and still work if the robot is down.
+  - flatten() is DELETE /v2/positions, used by the circuit breaker.
+  - Long only: never sells more than it holds.
 """
 from __future__ import annotations
 import logging, os, time
@@ -28,7 +26,7 @@ import requests
 log = logging.getLogger("investor.exec.alpaca")
 
 from _env import load_env
-load_env()   # carga investor/.env a os.environ (portable, sin rutas hardcodeadas)
+load_env()
 
 def _envstr(name, default=""):
     return os.environ.get(name, default).split("#")[0].strip().strip('"').strip("'")
@@ -39,8 +37,8 @@ def _load_keys():
 DRY_RUN = _envstr("INVESTOR_DRY_RUN", "true").lower() != "false"
 LIVE    = _envstr("INVESTOR_ALPACA_LIVE", "false").lower() == "true"
 API_KEY, API_SECRET = _load_keys()
-MIN_ORDER_USD = float(_envstr("INVESTOR_MIN_ORDER_USD", "1"))   # Alpaca permite notional chico
-CAPITAL_FALLBACK = float(_envstr("INVESTOR_CAPITAL_FALLBACK", "500"))
+MIN_ORDER_USD = float(_envstr("INVESTOR_MIN_ORDER_USD", "1"))
+CAPITAL_FALLBACK = float(_envstr("INVESTOR_CAPITAL_FALLBACK", "500"))   # equity reported in DRY_RUN
 
 _BASE_PAPER = "https://paper-api.alpaca.markets"
 _BASE_LIVE  = "https://api.alpaca.markets"
@@ -62,8 +60,9 @@ def _req(method, path, **kw):
         log.warning(f"[alpaca] {method} {path}: {e}")
         return None
 
-# ─── Estado de cuenta ───────────────────────────────────────────────────────
+# ─── Account state ──────────────────────────────────────────────────────────
 def get_account(retries=3, backoff=1.0):
+    """Raw account dict, retried with linear backoff. None if unreadable."""
     if DRY_RUN:
         return {"equity": CAPITAL_FALLBACK, "cash": CAPITAL_FALLBACK, "status": "DRY_RUN"}
     for i in range(max(1, retries)):
@@ -75,15 +74,15 @@ def get_account(retries=3, backoff=1.0):
     return None
 
 def get_equity(retries=3):
-    """Equity MTM (portfolio value marcado a mercado). None si ilegible → el ciclo omite
-    (mejor un hueco que un valor falso)."""
+    """Mark-to-market portfolio value, or None if unreadable (the cycle is then skipped:
+    a gap is better than a wrong value)."""
     if DRY_RUN:
         return CAPITAL_FALLBACK
     d = get_account(retries)
     return float(d["equity"]) if d and d.get("equity") is not None else None
 
 def get_positions():
-    """{symbol: {'qty':float,'mv':float,'avg':float}} de posiciones abiertas."""
+    """{symbol: {'qty': float, 'mv': float, 'avg': float}} for open positions."""
     if DRY_RUN:
         return {}
     d = _req("GET", "/v2/positions")
@@ -97,14 +96,14 @@ def market_open():
     return bool(d.get("is_open")) if isinstance(d, dict) else False
 
 def list_orders(limit=100, status="all"):
-    """Órdenes recientes de Alpaca (para persistir trazabilidad en order_log). [] en DRY_RUN."""
+    """Recent orders (used to persist order history). Empty in DRY_RUN."""
     if DRY_RUN:
         return []
     d = _req("GET", f"/v2/orders?status={status}&limit={int(limit)}&direction=desc&nested=true")
     return d if isinstance(d, list) else []
 
 def open_trailing_stops():
-    """{symbol: acciones cubiertas} por trailing stops SELL abiertos (para reconciliar cada heartbeat)."""
+    """{symbol: shares covered} by open SELL trailing stops (checked on every heartbeat)."""
     out = {}
     for o in list_orders(limit=100, status="open"):
         if o.get("type") == "trailing_stop" and o.get("side") == "sell":
@@ -112,7 +111,7 @@ def open_trailing_stops():
     return out
 
 def latest_prices(symbols):
-    """Último trade por símbolo (data API, feed IEX). {} si falla — el llamador decide qué hacer."""
+    """Last trade per symbol (data API, IEX feed). {} on failure; the caller decides."""
     if DRY_RUN or not symbols:
         return {}
     try:
@@ -127,12 +126,12 @@ def latest_prices(symbols):
         log.warning(f"[alpaca] latest_prices: {e}")
         return {}
 
-# ─── Órdenes ────────────────────────────────────────────────────────────────
+# ─── Orders ─────────────────────────────────────────────────────────────────
 def _coid(tag, symbol):
     return f"inv-{tag}-{symbol}-{int(time.time())}"[:48]
 
 def submit_notional(symbol, side, usd, coid=None):
-    """Orden de mercado por $ (fraccional). Para rebalanceo por pesos. side: 'buy'|'sell'."""
+    """Market order by dollar amount (fractional). side: 'buy' | 'sell'."""
     body = {"symbol": symbol, "notional": round(abs(usd), 2), "side": side,
             "type": "market", "time_in_force": "day",
             "client_order_id": coid or _coid("mk", symbol)}
@@ -142,8 +141,8 @@ def submit_notional(symbol, side, usd, coid=None):
     return _req("POST", "/v2/orders", json=body)
 
 def place_trailing_stop(symbol, qty, trail_percent, coid=None):
-    """Trailing stop NATIVO (SELL, GTC) = 'sale a tiempo' aunque el bot esté caído.
-    Alpaca exige ACCIONES ENTERAS en stops → redondeo hacia abajo; si <1 acción, se omite."""
+    """Native SELL trailing stop (GTC). Alpaca requires whole shares for stops, so the quantity
+    is rounded down and nothing is placed below one share."""
     q = int(abs(qty))
     if q < 1:
         return None
@@ -156,7 +155,7 @@ def place_trailing_stop(symbol, qty, trail_percent, coid=None):
     return _req("POST", "/v2/orders", json=body)
 
 def close_position(symbol):
-    """Cierra la posición COMPLETA (exacto, sin redondeos que provoquen 'insufficient qty')."""
+    """Close the whole position (exact quantity, avoids 'insufficient qty' rounding errors)."""
     if DRY_RUN:
         log.info(f"[alpaca] DRY close_position {symbol}"); return {"dry_run": True}
     return _req("DELETE", f"/v2/positions/{symbol}")
@@ -166,12 +165,15 @@ def cancel_all_orders():
         log.info("[alpaca] DRY cancel_all_orders"); return {"dry_run": True}
     return _req("DELETE", "/v2/orders")
 
-# ─── Rebalanceo ─────────────────────────────────────────────────────────────
+# ─── Rebalancing ────────────────────────────────────────────────────────────
 def rebalance(target_weights, equity=None):
-    """Lleva la cartera a los pesos objetivo. LONG-ONLY. VENDE PRIMERO (libera caja), luego compra
-    → evita cash negativo. Cierres completos vía close_position (exacto). Huérfanas (no en target)→cerradas."""
+    """Move the book to the target weights. Long only.
+
+    Sells first to free cash before buying, so cash never goes negative. Full exits use
+    close_position (exact). Positions not in the target are closed. Returns orders placed.
+    """
     equity = equity or get_equity() or CAPITAL_FALLBACK
-    cur = get_positions()  # {} en DRY_RUN
+    cur = get_positions()
     target = {s: w for s, w in target_weights.items() if w > 1e-4}
     syms = set(target) | set(cur)
     cancel_all_orders()
@@ -182,25 +184,23 @@ def rebalance(target_weights, equity=None):
             continue
         (buys if delta > 0 else sells).append((s, delta))
     placed = 0
-    # 1) VENTAS primero (libera caja antes de comprar)
     for s, delta in sells:
         if target.get(s, 0.0) * equity < MIN_ORDER_USD and s in cur:
-            if close_position(s) is not None: placed += 1          # salida total exacta
-        elif submit_notional(s, "sell", -delta) is not None:        # reducción parcial por $
+            if close_position(s) is not None: placed += 1
+        elif submit_notional(s, "sell", -delta) is not None:
             placed += 1
     if sells and not DRY_RUN:
-        time.sleep(2)                                               # esperar que liquiden
-    # 2) COMPRAS
+        time.sleep(2)                                               # let the sells settle
     for s, delta in buys:
         if submit_notional(s, "buy", delta) is not None: placed += 1
-    log.info(f"[alpaca] rebalanceo: {placed} órden(es) ({len(sells)} venta/{len(buys)} compra) · "
+    log.info(f"[alpaca] rebalance: {placed} order(s) ({len(sells)} sell/{len(buys)} buy) · "
              f"equity ${equity:.0f} · {mode_str()}")
     return placed
 
 def flatten():
-    """Liquida TODAS las posiciones (HALT del circuit breaker / salida por evento)."""
+    """Liquidate every position (circuit-breaker halt)."""
     if DRY_RUN:
-        log.info("[alpaca] DRY flatten (cerrar todo)"); return {"dry_run": True}
+        log.info("[alpaca] DRY flatten (close all)"); return {"dry_run": True}
     cancel_all_orders()
     return _req("DELETE", "/v2/positions")
 
