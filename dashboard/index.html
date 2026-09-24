@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>investor · Mi Patrimonio</title>
+<title>investor · dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
 <style>
@@ -15,7 +15,7 @@
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{overflow-x:hidden;width:100%}
   canvas,img,svg,table{max-width:100%}
-  .cw{position:relative;width:100%;height:210px}            /* contenedor de gráfica (altura fija) */
+  .cw{position:relative;width:100%;height:210px}            /* fixed-height chart container */
   .cw.sm{height:200px}
   .cw canvas{position:absolute!important;inset:0;width:100%!important;height:100%!important}
   body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;
@@ -60,7 +60,7 @@
     .main,.row2,.row3{grid-template-columns:1fr}
     h1{font-size:19px} .kpi .big{font-size:22px}
   }
-  /* celular chico — compacto pero sin perder info */
+  /* small phones: compact, same information */
   @media(max-width:480px){
     body{padding:9px}
     .grid{gap:11px} .kpis{gap:9px}
@@ -74,87 +74,87 @@
     .tag{padding:2px 7px;font-size:9px}
     .bar{width:46px} .ts{padding:1px 5px}
     .just{padding:11px;font-size:11.5px} .just td,.just th{padding:5px 4px}
-    .just td:nth-child(5),.just th:nth-child(5){display:none}   /* ocultar columna Δ en móvil */
+    .just td:nth-child(5),.just th:nth-child(5){display:none}   /* hide the Change column on phones */
     .footnote{font-size:10px}
-    .cw{height:170px} .cw.sm{height:185px}                      /* gráficas más bajas en móvil */
-    .bar{display:none}                                          /* ocultar barra de peso (queda el %) */
+    .cw{height:170px} .cw.sm{height:185px}                      /* shorter charts on phones */
+    .bar{display:none}                                          /* hide the weight bar (the % remains) */
     .header>div:last-child{width:100%;justify-content:flex-start}
   }
-  /* la tabla de justificación nunca rompe el ancho: scroll horizontal suave */
+  /* the rationale table never breaks the layout: horizontal scroll */
   .just{-webkit-overflow-scrolling:touch}
 </style>
 </head>
 <body>
 <div class="header">
-  <div><h1>💼 Mi Patrimonio</h1>
-    <div class="muted" style="font-size:12px">Cartera manual QQQ/QLD (señal SMA200) · robot multi-sector en PAPER como laboratorio</div></div>
+  <div><h1>investor</h1>
+    <div class="muted" style="font-size:12px">Manual QQQ/QLD signal (SMA200) · multi-sector momentum robot on a PAPER account</div></div>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <span class="pill"><span class="dot" id="robotdot"></span> <span id="robotstatus">Robot</span></span>
-    <span class="pill muted" id="clock">— Lima</span>
+    <span class="pill muted" id="clock">- Lima</span>
   </div>
 </div>
 
 <div class="grid kpis">
-  <div class="card kpi"><div class="muted">Patrimonio (Alpaca)</div>
+  <div class="card kpi"><div class="muted">Equity (Alpaca paper)</div>
     <div class="big" id="equity">—</div><div class="sub" id="daychange">—</div></div>
-  <div class="card kpi"><div class="muted">Caja libre</div>
+  <div class="card kpi"><div class="muted">Cash</div>
     <div class="big" id="cash">—</div><div class="sub muted" id="mode">—</div></div>
-  <div class="card kpi"><div class="muted">Drawdown actual</div>
+  <div class="card kpi"><div class="muted">Current drawdown</div>
     <div class="big" id="dd">—</div><div class="gauge"><div id="ddbar" style="width:0%"></div></div>
-    <div class="sub muted" id="ddsub">tope −30%</div></div>
-  <div class="card kpi"><div class="muted">Diversificación</div>
-    <div class="big"><span id="nsec">—</span> <span style="font-size:14px" class="muted">sectores</span></div>
+    <div class="sub muted" id="ddsub">cap −30%</div></div>
+  <div class="card kpi"><div class="muted">Diversification</div>
+    <div class="big"><span id="nsec">—</span> <span style="font-size:14px" class="muted">sectors</span></div>
     <div class="sub muted" id="seclist">—</div></div>
 </div>
 
 <div class="grid main" style="margin-top:16px">
   <div class="card">
-    <h2>🧭 Mi cartera manual · QQQ/QLD (dinero real)</h2>
-    <div id="stratBadge" class="muted">Cargando señal…</div>
+    <h2>Manual portfolio signal · QQQ/QLD</h2>
+    <div id="stratBadge" class="muted">Loading signal...</div>
     <div id="stratInfo" style="margin-top:10px;font-size:13px"></div>
     <div style="margin-top:14px">
-      <div class="muted" style="font-size:12px;margin-bottom:6px">📐 Calculadora de órdenes — ingresa lo que tienes HOY (US$):</div>
+      <div class="muted" style="font-size:12px;margin-bottom:6px">Order calculator: enter your current holdings (US$):</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <label class="muted" style="font-size:12px">QQQ $<input id="inQQQ" type="number" min="0" step="any" style="width:90px;padding:5px;border:1px solid var(--line);border-radius:8px"></label>
         <label class="muted" style="font-size:12px">QLD $<input id="inQLD" type="number" min="0" step="any" style="width:90px;padding:5px;border:1px solid var(--line);border-radius:8px"></label>
-        <label class="muted" style="font-size:12px">Caja $<input id="inCash" type="number" min="0" step="any" style="width:90px;padding:5px;border:1px solid var(--line);border-radius:8px"></label>
-        <button onclick="calcOrders()" style="padding:6px 14px;border:none;border-radius:8px;background:var(--accent);color:#fff;font-weight:600;cursor:pointer">Calcular</button>
+        <label class="muted" style="font-size:12px">Cash $<input id="inCash" type="number" min="0" step="any" style="width:90px;padding:5px;border:1px solid var(--line);border-radius:8px"></label>
+        <button onclick="calcOrders()" style="padding:6px 14px;border:none;border-radius:8px;background:var(--accent);color:#fff;font-weight:600;cursor:pointer">Calculate</button>
       </div>
       <div id="orders" style="margin-top:10px"></div>
     </div>
-    <div class="footnote">Señal: cierre de QQQ vs SMA200 ± 1% (histéresis) · se ejecuta al OPEN del día siguiente ·
-      rebalanceo solo si QLD pesa &lt;15% o &gt;25% de lo invertido · validado en backtests v11/v12 (walk-forward 2008-2026)</div>
+    <div class="footnote">Signal: QQQ close vs SMA200 ± 1% (hysteresis) · executed at the next day's OPEN ·
+      rebalance only if QLD is &lt;15% or &gt;25% of the invested amount · research: backtests v11/v12 (walk-forward 2008-2026)</div>
   </div>
-  <div class="card"><h2>📉 QQQ vs SMA200 (la señal)</h2><div class="cw"><canvas id="stratChart"></canvas></div>
+  <div class="card"><h2>QQQ vs SMA200 (the signal)</h2><div class="cw"><canvas id="stratChart"></canvas></div>
     <div class="footnote" id="stratFoot">—</div></div>
 </div>
 
 <div class="grid main">
-  <div class="card"><h2>📈 Curva de patrimonio</h2><div class="cw"><canvas id="equityChart"></canvas></div>
-    <div class="footnote">Equity MTM · hora de Lima (UTC−5) · robot en PAPER (laboratorio)</div></div>
-  <div class="card"><h2>🎯 Cartera (top-5)</h2><div id="positions" class="muted">Cargando…</div>
-    <div class="footnote">Trailing stop 20% por posición · equiponderado</div></div>
+  <div class="card"><h2>Equity curve</h2><div class="cw"><canvas id="equityChart"></canvas></div>
+    <div class="footnote">MTM equity · Lima time (UTC−5) · robot on a PAPER account</div></div>
+  <div class="card"><h2>Portfolio (top-5)</h2><div id="positions" class="muted">Loading...</div>
+    <div class="footnote">20% trailing stop per position · equal weight</div></div>
 </div>
 
 <div class="grid row3">
-  <div class="card"><h2>🧠 Por qué esta cartera</h2><div class="just" id="rationale">Cargando…</div></div>
-  <div class="card"><h2>🍩 Sectores en cartera</h2><div class="cw sm"><canvas id="donut"></canvas></div></div>
+  <div class="card"><h2>Why this portfolio</h2><div class="just" id="rationale">Loading...</div></div>
+  <div class="card"><h2>Sectors held</h2><div class="cw sm"><canvas id="donut"></canvas></div></div>
 </div>
 
 <div class="grid row2">
-  <div class="card"><h2>🕑 Historial de redistribuciones</h2><div class="tl" id="history" class="muted">Cargando…</div></div>
-  <div class="card"><h2>🩺 Salud · señales a revisar</h2><div id="health">Cargando…</div></div>
+  <div class="card"><h2>Rebalance history</h2><div class="tl" id="history" class="muted">Loading...</div></div>
+  <div class="card"><h2>Health · items to review</h2><div id="health">Loading...</div></div>
 </div>
 
 <script>
-const SC={semis:['#aecbfa','#2f5fb0'],salud:['#b7e1cd','#1d7a52'],energia:['#fce4b3','#9a6b15'],
- finanzas:['#d8c4f6','#6b3fb0'],consumo:['#f8cadd','#b03f72'],software:['#bce8ec','#1f7a82'],comm:['#ffd6bf','#b0612f'],'?':['#dfe4ec','#7a8595']};
+const SC={semis:['#aecbfa','#2f5fb0'],health:['#b7e1cd','#1d7a52'],energy:['#fce4b3','#9a6b15'],
+ financials:['#d8c4f6','#6b3fb0'],consumer:['#f8cadd','#b03f72'],software:['#bce8ec','#1f7a82'],comm:['#ffd6bf','#b0612f'],'?':['#dfe4ec','#7a8595']};
 const $=id=>document.getElementById(id);
 const usd=v=>'$'+Number(v).toLocaleString('en-US',{maximumFractionDigits:0});
 let equityChart, donutChart;
 
-function tick(){const f=new Intl.DateTimeFormat('es-PE',{timeZone:'America/Lima',dateStyle:'medium',timeStyle:'short'});
-  $('clock').textContent='🕒 '+f.format(new Date())+' · Lima';}
+function tick(){const f=new Intl.DateTimeFormat('en-US',{timeZone:'America/Lima',dateStyle:'medium',timeStyle:'short'});
+  $('clock').textContent=f.format(new Date())+' · Lima';}
 tick(); setInterval(tick,1000);
 
 async function get(p){try{const r=await fetch(p);return await r.json();}catch(e){return null;}}
@@ -163,14 +163,14 @@ async function loadSummary(){
   const s=await get('/api/summary'); if(!s)return;
   $('equity').textContent=usd(s.equity);
   const up=s.day_change_usd>=0;
-  $('daychange').innerHTML=`<span class="${up?'green':'red'}">${up?'▲':'▼'} ${usd(Math.abs(s.day_change_usd))} hoy (${up?'+':''}${s.day_change_pct}%)</span>`;
-  $('cash').textContent=usd(s.cash); $('mode').textContent=s.mode+' · líderes top-'+s.config.topn;
+  $('daychange').innerHTML=`<span class="${up?'green':'red'}">${up?'▲':'▼'} ${usd(Math.abs(s.day_change_usd))} today (${up?'+':''}${s.day_change_pct}%)</span>`;
+  $('cash').textContent=usd(s.cash); $('mode').textContent=s.mode+' · top-'+s.config.topn+' leaders';
   const ddp=(s.drawdown*100); $('dd').textContent=ddp.toFixed(1)+'%';
   $('ddbar').style.width=Math.min(100,Math.abs(s.drawdown/s.dd_cap)*100)+'%';
-  $('ddsub').textContent=`tope ${(s.dd_cap*100)}% · margen ${(Math.abs(s.dd_cap*100)-Math.abs(ddp)).toFixed(1)}pp`;
+  $('ddsub').textContent=`cap ${(s.dd_cap*100)}% · headroom ${(Math.abs(s.dd_cap*100)-Math.abs(ddp)).toFixed(1)}pp`;
   $('nsec').textContent=s.n_sectors; $('seclist').textContent=s.sectors.join(' · ')||'—';
   const halt=s.robot_status==='halted';
-  $('robotdot').className='dot'+(halt?' halt':''); $('robotstatus').textContent=halt?'EN HALT':'Robot activo';
+  $('robotdot').className='dot'+(halt?' halt':''); $('robotstatus').textContent=halt?'HALTED':'Robot active';
 }
 async function loadEquity(){
   const e=await get('/api/equity'); if(!e||!e.length){return;}
@@ -184,13 +184,13 @@ async function loadEquity(){
 }
 async function loadPositions(){
   const p=await get('/api/positions');
-  if(!p||!p.length){$('positions').innerHTML='<div class="muted">Sin posiciones.</div>';drawDonut([]);return;}
+  if(!p||!p.length){$('positions').innerHTML='<div class="muted">No positions.</div>';drawDonut([]);return;}
   $('positions').innerHTML=p.map(x=>{const c=SC[x.sector]||SC['?'];const up=x.pnl_pct>=0;
     return `<div class="pos"><div class="tkr"><span class="sym">${x.symbol}</span>
       <span class="tag" style="background:${c[0]};color:${c[1]}">${x.sector}</span></div>
       <div style="text-align:right"><div class="${up?'green':'red'}" style="font-weight:700">${up?'+':''}${x.pnl_pct}%</div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:3px;justify-content:flex-end">
-        <span class="ts">🛡️ ${x.trail_pct}%</span><div class="bar"><div style="width:${x.weight}%"></div></div>
+        <span class="ts">stop ${x.trail_pct}%</span><div class="bar"><div style="width:${x.weight}%"></div></div>
         <span class="muted">${x.weight}%</span></div></div></div>`;}).join('');
   drawDonut(p);
 }
@@ -201,48 +201,48 @@ function drawDonut(p){const by={};p.forEach(x=>by[x.sector]=(by[x.sector]||0)+x.
     options:{responsive:true,maintainAspectRatio:false,cutout:'68%',plugins:{legend:{position:'bottom',labels:{color:'#222a37',padding:12,boxWidth:12,font:{size:11}}}}}});
 }
 async function loadRationale(){const r=await get('/api/rationale');
-  $('rationale').innerHTML=r&&r.markdown?marked.parse(r.markdown):'Sin datos.';}
+  $('rationale').innerHTML=r&&r.markdown?marked.parse(r.markdown):'No data.';}
 async function loadHistory(){const h=await get('/api/history');
   $('history').innerHTML=(h&&h.length)?h.map(x=>`<div class="tl-item"><b>${x.ts||''}</b>
-    <div class="muted" style="font-size:12px">${x.title}</div></div>`).join(''):'<div class="muted">Sin historial.</div>';}
+    <div class="muted" style="font-size:12px">${x.title}</div></div>`).join(''):'<div class="muted">No history.</div>';}
 async function loadHealth(){const h=await get('/api/health'); if(!h)return;
   let html='';
   if(h.heartbeat)html+=`<div class="review"><span class="sev" style="background:#dcf3e8;color:var(--green)">OK</span>
-    <span>Latido ${h.heartbeat.cycle} · ${h.heartbeat.ts}</span></div>`;
+    <span>Heartbeat ${h.heartbeat.cycle} · ${h.heartbeat.ts}</span></div>`;
   html+=`<div class="review"><span class="sev" style="background:${h.open_errors?'#fbe0e4':'#dcf3e8'};color:${h.open_errors?'var(--red)':'var(--green)'}">${h.open_errors?'ERR':'OK'}</span>
-    <span>${h.open_errors} error(es) abierto(s)</span></div>`;
+    <span>${h.open_errors} open error(s)</span></div>`;
   (h.reviews||[]).forEach(r=>{const col=r.severity==='critical'?['#fbe0e4','var(--red)']:r.severity==='warn'?['#fbf0d8','var(--amber)']:['#dcf3e8','var(--green)'];
     html+=`<div class="review"><span class="sev" style="background:${col[0]};color:${col[1]}">${(r.severity||'info').toUpperCase()}</span>
       <span>${r.detail} <span class="muted">· ${r.ts}</span></span></div>`;});
-  $('health').innerHTML=html||'<div class="muted">Todo en orden.</div>';
+  $('health').innerHTML=html||'<div class="muted">All clear.</div>';
 }
-// ── Mi cartera manual QQQ/QLD ─────────────────────────────────────────────
+// ── Manual QQQ/QLD signal ─────────────────────────────────────────────────
 let stratChart, STRAT=null;
 async function loadStrategy(){
-  const s=await get('/api/estrategia'); if(!s||s.error){$('stratBadge').textContent='⚠️ señal no disponible';return;}
+  const s=await get('/api/strategy'); if(!s||s.error){$('stratBadge').textContent='Signal unavailable';return;}
   STRAT=s;
-  const on=s.estado==='ON';
-  const badge=on?'🟢 RIESGO ON — objetivo: 80% QQQ + 20% QLD':'🔴 RIESGO OFF — objetivo: 100% caja';
-  const flip=s.flip_pendiente?`<div style="margin-top:6px;padding:8px 12px;background:#fbf0d8;color:var(--amber);border-radius:10px;font-weight:700">
-    🔔 LA SEÑAL CAMBIÓ EN EL ÚLTIMO CIERRE → ejecuta el cambio en la PRÓXIMA APERTURA (9:30 NY / 8:30 Lima)</div>`:'';
+  const on=s.state==='ON';
+  const badge=on?'RISK ON · target: 80% QQQ + 20% QLD':'RISK OFF · target: 100% cash';
+  const flip=s.flip_pending?`<div style="margin-top:6px;padding:8px 12px;background:#fbf0d8;color:var(--amber);border-radius:10px;font-weight:700">
+    The signal changed at the last close: act at the NEXT OPEN (9:30 New York)</div>`:'';
   $('stratBadge').innerHTML=`<div style="font-size:17px;font-weight:800;color:${on?'var(--green)':'var(--red)'}">${badge}</div>${flip}`;
   $('stratInfo').innerHTML=
-    `QQQ cerró <b>$${s.qqq_close}</b> el ${s.senal_fecha} · SMA200 <b>$${s.sma}</b> · distancia <b class="${s.dist_pct>=0?'green':'red'}">${s.dist_pct>0?'+':''}${s.dist_pct}%</b><br>
-     <span class="muted">Niveles: pasa a OFF si cierra &lt; <b>$${s.nivel_off}</b> · pasa a ON si cierra &gt; <b>$${s.nivel_on}</b> ·
-     último cambio de estado: ${s.ultimo_cambio||'—'} · actualizado ${s.actualizado}</span>`;
-  // gráfico señal
+    `QQQ closed at <b>$${s.qqq_close}</b> on ${s.signal_date} · SMA200 <b>$${s.sma}</b> · distance <b class="${s.dist_pct>=0?'green':'red'}">${s.dist_pct>0?'+':''}${s.dist_pct}%</b><br>
+     <span class="muted">Levels: turns OFF on a close &lt; <b>$${s.level_off}</b> · turns ON on a close &gt; <b>$${s.level_on}</b> ·
+     last change: ${s.last_flip||'-'} · updated ${s.updated}</span>`;
+  // signal chart
   const c=s.chart;
   if(stratChart)stratChart.destroy();
   stratChart=new Chart($('stratChart'),{type:'line',data:{labels:c.dates,datasets:[
     {label:'QQQ',data:c.close,borderColor:'#5b8def',borderWidth:2,pointRadius:0,tension:.2},
     {label:'SMA200',data:c.sma,borderColor:'#c8922a',borderWidth:1.7,pointRadius:0,tension:.2},
-    {label:'banda',data:c.on,borderColor:'#1faa6b55',borderWidth:1,pointRadius:0,borderDash:[4,4]},
-    {label:'banda2',data:c.off,borderColor:'#e1576b55',borderWidth:1,pointRadius:0,borderDash:[4,4]}]},
+    {label:'on level',data:c.on,borderColor:'#1faa6b55',borderWidth:1,pointRadius:0,borderDash:[4,4]},
+    {label:'off level',data:c.off,borderColor:'#e1576b55',borderWidth:1,pointRadius:0,borderDash:[4,4]}]},
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
       scales:{y:{grid:{color:'#eef1f6'},ticks:{color:'#7a8595',callback:v=>'$'+v}},
               x:{grid:{display:false},ticks:{color:'#7a8595',maxTicksLimit:5}}}}});
-  $('stratFoot').textContent=`últimos ${c.dates.length} días · verde punteado = nivel ON ($${s.nivel_on}) · rojo punteado = nivel OFF ($${s.nivel_off})`;
-  // restaurar inputs guardados
+  $('stratFoot').textContent=`last ${c.dates.length} days · dashed green = ON level ($${s.level_on}) · dashed red = OFF level ($${s.level_off})`;
+  // restore saved inputs (stored only in this browser)
   ['inQQQ','inQLD','inCash'].forEach(k=>{const v=localStorage.getItem(k);if(v!==null)$(k).value=v;});
   if(localStorage.getItem('inQQQ')!==null)calcOrders();
 }
@@ -251,26 +251,26 @@ function calcOrders(){
   const q=+($('inQQQ').value||0), l=+($('inQLD').value||0), c=+($('inCash').value||0);
   ['inQQQ','inQLD','inCash'].forEach(k=>localStorage.setItem(k,$(k).value||'0'));
   const total=q+l+c;
-  if(total<=0){$('orders').innerHTML='<span class="muted">Ingresa tus montos para ver las órdenes.</span>';return;}
-  const on=STRAT.estado==='ON', px=STRAT.px;
+  if(total<=0){$('orders').innerHTML='<span class="muted">Enter your amounts to see the orders.</span>';return;}
+  const on=STRAT.state==='ON', px=STRAT.px;
   const line=(txt,color)=>`<div style="padding:7px 12px;background:var(--soft);border-radius:9px;margin-top:6px;font-weight:600;color:${color||'var(--tx)'}">${txt}</div>`;
   let html='';
   if(!on){
-    if(q+l<1) html=line('✅ Ya estás 100% en caja. Nada que hacer.','var(--green)');
-    else{ if(q>=1)html+=line(`🔴 VENDE todo tu QQQ: $${q.toLocaleString('en-US',{maximumFractionDigits:0})} (≈ ${(q/px.QQQ).toFixed(2)} acciones)`,'var(--red)');
-          if(l>=1)html+=line(`🔴 VENDE todo tu QLD: $${l.toLocaleString('en-US',{maximumFractionDigits:0})} (≈ ${(l/px.QLD).toFixed(2)} acciones)`,'var(--red)');
-          html+=line('→ El total queda en caja (money market / dólares) hasta que la señal vuelva a ON.'); }
+    if(q+l<1) html=line('Already 100% cash. Nothing to do.','var(--green)');
+    else{ if(q>=1)html+=line(`SELL all QQQ: $${q.toLocaleString('en-US',{maximumFractionDigits:0})} (≈ ${(q/px.QQQ).toFixed(2)} shares)`,'var(--red)');
+          if(l>=1)html+=line(`SELL all QLD: $${l.toLocaleString('en-US',{maximumFractionDigits:0})} (≈ ${(l/px.QLD).toFixed(2)} shares)`,'var(--red)');
+          html+=line('→ Everything stays in cash (money market / USD) until the signal turns ON again.'); }
   }else{
     const tq=total*STRAT.params.w_qqq, tl=total*STRAT.params.w_qld;
     const inv=q+l, wl=inv>0?l/inv:0;
     const inBand=inv>0 && c/total<0.05 && wl>=STRAT.drift.lo && wl<=STRAT.drift.hi;
-    if(inBand) html=line(`✅ Dentro de banda (QLD pesa ${(wl*100).toFixed(1)}% de lo invertido, banda 15–25%). No hagas nada.`,'var(--green)');
+    if(inBand) html=line(`Within band (QLD is ${(wl*100).toFixed(1)}% of the invested amount, band 15–25%). Nothing to do.`,'var(--green)');
     else{
       const dq=tq-q, dl=tl-l;
       const fmt=v=>'$'+Math.abs(v).toLocaleString('en-US',{maximumFractionDigits:0});
-      if(Math.abs(dq)>=1)html+=line(`${dq>0?'🟢 COMPRA':'🔴 VENDE'} ${fmt(dq)} de QQQ (≈ ${Math.abs(dq/px.QQQ).toFixed(2)} acciones a ~$${px.QQQ})`,dq>0?'var(--green)':'var(--red)');
-      if(Math.abs(dl)>=1)html+=line(`${dl>0?'🟢 COMPRA':'🔴 VENDE'} ${fmt(dl)} de QLD (≈ ${Math.abs(dl/px.QLD).toFixed(2)} acciones a ~$${px.QLD})`,dl>0?'var(--green)':'var(--red)');
-      html+=line(`→ Objetivo final: ${fmt(tq)} en QQQ (80%) + ${fmt(tl)} en QLD (20%). Ejecuta en la apertura, órdenes de mercado.`);
+      if(Math.abs(dq)>=1)html+=line(`${dq>0?'BUY':'SELL'} ${fmt(dq)} of QQQ (≈ ${Math.abs(dq/px.QQQ).toFixed(2)} shares at ~$${px.QQQ})`,dq>0?'var(--green)':'var(--red)');
+      if(Math.abs(dl)>=1)html+=line(`${dl>0?'BUY':'SELL'} ${fmt(dl)} of QLD (≈ ${Math.abs(dl/px.QLD).toFixed(2)} shares at ~$${px.QLD})`,dl>0?'var(--green)':'var(--red)');
+      html+=line(`→ Final target: ${fmt(tq)} in QQQ (80%) + ${fmt(tl)} in QLD (20%). Execute at the open with market orders.`);
     }
   }
   $('orders').innerHTML=html;

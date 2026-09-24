@@ -1,17 +1,22 @@
 """
-investor — Backend del dashboard "Mi Patrimonio" (FastAPI).
-Sirve la DB (estado/justificaciones/logs) + Alpaca (cuenta/posiciones) como JSON,
-y el frontend pastel. TODAS las fechas se devuelven en HORA DE LIMA (UTC−5).
+Dashboard backend (FastAPI).
 
-Run:  python dashboard/server.py     → http://127.0.0.1:8000
+Serves the robot's state from the database (equity, rationale, logs) and from Alpaca (account,
+positions) as JSON, plus the single-page frontend. All timestamps are returned in Lima time
+(UTC-5).
+
+Also computes the manual QQQ/QLD SMA200 signal (/api/strategy), the one strategy that survived
+the research (see research/backtest_v11_etf.py and research/backtest_v12_wf_combo.py).
+
+Run:  python dashboard/server.py     -> http://127.0.0.1:8080
 """
 import os, sys
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-PORT = int(os.environ.get("INVESTOR_DASHBOARD_PORT", "8080"))   # 8080 por defecto (VM)
+PORT = int(os.environ.get("INVESTOR_DASHBOARD_PORT", "8080"))
 
-# El dashboard lee la cuenta PAPER por defecto (Oscar cambia a real con env).
+# The dashboard reads the PAPER account unless the environment says otherwise.
 os.environ.setdefault("INVESTOR_DRY_RUN", "false")
 os.environ.setdefault("INVESTOR_ALPACA_LIVE", "false")
 
@@ -27,7 +32,7 @@ import uvicorn
 
 LIMA = ZoneInfo("America/Lima")
 HERE = os.path.dirname(os.path.abspath(__file__))
-app = FastAPI(title="investor · Mi Patrimonio")
+app = FastAPI(title="investor dashboard")
 
 
 def lima(iso, fmt="%d %b %Y · %H:%M"):
@@ -43,7 +48,7 @@ def lima(iso, fmt="%d %b %Y · %H:%M"):
 
 
 def _db():
-    return DB()  # WAL → lectura concurrente segura mientras el orquestador escribe
+    return DB()  # WAL: safe concurrent reads while the orchestrator writes
 
 
 @app.get("/api/summary")
@@ -53,7 +58,7 @@ def summary():
     equity = float(acc.get("equity", 0) or 0)
     last_eq = float(acc.get("last_equity", equity) or equity)
     st = d.get_state()
-    peak = max(st.get("peak") or equity, equity)   # pico vivo (la DB puede estar atrás) → dd ≤ 0
+    peak = max(st.get("peak") or equity, equity)   # the DB may lag the live account; keeps dd <= 0
     dd = (equity / peak - 1) if peak else 0.0
     pos = _positions_raw()
     sectors = sorted({SECTOR.get(p["symbol"], "?") for p in pos})
@@ -83,7 +88,7 @@ def equity_series():
 
 
 def _positions_raw():
-    """Posiciones vivas de Alpaca con P&L y sector (raw para reuso interno)."""
+    """Live Alpaca positions with P&L and last price."""
     data = ex._req("GET", "/v2/positions")
     if not isinstance(data, list):
         return []
@@ -91,7 +96,7 @@ def _positions_raw():
     for p in data:
         try:
             mv = float(p["market_value"])
-            if abs(mv) < 10:           # ignora polvo (restos de pruebas, dust de fraccionales)
+            if abs(mv) < 10:           # ignore dust (test orders, fractional leftovers)
                 continue
             out.append({"symbol": p["symbol"], "mv": mv,
                         "pnl_pct": round(float(p["unrealized_plpc"]) * 100, 2),
@@ -118,7 +123,7 @@ def rationale():
     d = _db()
     r = d.conn.execute("SELECT ts,summary FROM ai_explanation ORDER BY ts DESC LIMIT 1").fetchone()
     d.close()
-    return {"ts": lima(r["ts"]) if r else None, "markdown": r["summary"] if r else "Sin redistribuciones aún."}
+    return {"ts": lima(r["ts"]) if r else None, "markdown": r["summary"] if r else "No rebalances yet."}
 
 
 @app.get("/api/history")
@@ -148,17 +153,17 @@ def health():
     }
 
 
-# ── Estrategia MANUAL de Oscar: 80% QQQ + 20% QLD con filtro SMA200 ± banda 1% ────────────────
-# Validada en research/backtest_v11_etf.py y v12 (walk-forward): señal al CIERRE de QQQ →
-# se ejecuta al OPEN del día siguiente. RIESGO ON = 80/20 · RIESGO OFF = 100% caja.
+# ── Manual QQQ/QLD strategy: 80% QQQ + 20% QLD while QQQ is above its SMA200 (1% band) ─────────
+# Validated in research/backtest_v11_etf.py and backtest_v12_wf_combo.py. The signal uses the
+# QQQ close and is executed at the next day's open. Risk on = 80/20, risk off = 100% cash.
 SMA_N, BAND = 200, 0.01
 W_QQQ, W_QLD = 0.80, 0.20
-DRIFT_LO, DRIFT_HI = 0.15, 0.25          # rebalancear solo si QLD pesa <15% o >25% de lo invertido
+DRIFT_LO, DRIFT_HI = 0.15, 0.25          # rebalance only if QLD is <15% or >25% of the invested amount
 _strat_cache = {"t": 0.0, "data": None}
 
 
 def _daily_closes(sym, days=720):
-    """Cierres diarios ajustados (split+div) de Alpaca. [(fecha_iso, close), ...]"""
+    """Split- and dividend-adjusted daily closes from Alpaca: [(iso_date, close), ...]."""
     import requests
     from datetime import timedelta
     start = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
@@ -180,15 +185,15 @@ def _daily_closes(sym, days=720):
     return [(b["t"][:10], float(b["c"])) for b in rows]
 
 
-@app.get("/api/estrategia")
-def estrategia():
+@app.get("/api/strategy")
+def strategy():
     import time as _t
     if _strat_cache["data"] and _t.time() - _strat_cache["t"] < 900:
         return _strat_cache["data"]
     qqq = _daily_closes("QQQ")
     if len(qqq) < SMA_N + 5:
-        return JSONResponse({"error": "datos insuficientes de QQQ"}, status_code=503)
-    # si el mercado está ABIERTO, la última barra diaria es parcial → la señal usa el cierre previo
+        return JSONResponse({"error": "not enough QQQ data"}, status_code=503)
+    # While the market is open the last daily bar is partial, so the signal uses the prior close.
     if ex.market_open():
         qqq = qqq[:-1]
     dates = [d for d, _ in qqq]
@@ -217,16 +222,16 @@ def estrategia():
     flip_today = len(states) >= 2 and states[-1] != states[-2]
     i0 = max(0, len(dates) - 130)
     data = {
-        "estado": "ON" if state else "OFF",
-        "objetivo": ({"QQQ": W_QQQ, "QLD": W_QLD} if state else {"caja": 1.0}),
-        "senal_fecha": dates[-1],
+        "state": "ON" if state else "OFF",
+        "target": ({"QQQ": W_QQQ, "QLD": W_QLD} if state else {"cash": 1.0}),
+        "signal_date": dates[-1],
         "qqq_close": round(closes[-1], 2),
         "sma": round(sma[-1], 2),
         "dist_pct": round((closes[-1] / sma[-1] - 1) * 100, 2),
-        "nivel_off": round(sma[-1] * (1 - BAND), 2),
-        "nivel_on": round(sma[-1] * (1 + BAND), 2),
-        "flip_pendiente": flip_today,           # cruzó en el último cierre → ejecutar al próximo open
-        "ultimo_cambio": last_flip,
+        "level_off": round(sma[-1] * (1 - BAND), 2),
+        "level_on": round(sma[-1] * (1 + BAND), 2),
+        "flip_pending": flip_today,           # crossed on the last close: act at the next open
+        "last_flip": last_flip,
         "px": {"QQQ": round(closes[-1], 2), "QLD": round(qld[-1][1], 2) if qld else None},
         "drift": {"lo": DRIFT_LO, "hi": DRIFT_HI},
         "params": {"sma_n": SMA_N, "band_pct": BAND * 100, "w_qqq": W_QQQ, "w_qld": W_QLD},
@@ -234,7 +239,7 @@ def estrategia():
                   "sma": [round(s, 2) if s else None for s in sma[i0:]],
                   "on": [round(s * (1 + BAND), 2) if s else None for s in sma[i0:]],
                   "off": [round(s * (1 - BAND), 2) if s else None for s in sma[i0:]]},
-        "actualizado": lima(datetime.now(timezone.utc).isoformat()),
+        "updated": lima(datetime.now(timezone.utc).isoformat()),
     }
     _strat_cache.update(t=_t.time(), data=data)
     return data
@@ -251,11 +256,12 @@ if __name__ == "__main__":
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("8.8.8.8", 80))
         lan = s.getsockname()[0]; s.close()
     except Exception:
-        lan = "<IP-de-tu-PC>"
+        lan = "<your-ip>"
     print("=" * 56)
-    print("  Dashboard 'Mi Patrimonio'  ·  Ctrl+C para parar")
+    print("  investor dashboard  ·  Ctrl+C to stop")
     print(f"  Local:    http://127.0.0.1:{PORT}")
-    print(f"  Red/VM:   http://{lan}:{PORT}")
+    print(f"  LAN/VM:   http://{lan}:{PORT}")
     print("=" * 56)
-    # 0.0.0.0 = accesible desde la red local / la IP pública de la VM. Protege el puerto con firewall.
+    # 0.0.0.0 makes the dashboard reachable from the LAN or the VM's public IP. It has no
+    # authentication: restrict the port with a firewall.
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="warning")
