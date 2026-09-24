@@ -248,6 +248,9 @@ def main(full=False):
     for s in ("SPY", "QQQ"):
         b = bench(s, eqA.index[0], eqA.index[-1])
         print(fmt(f"{s} buy&hold", metrics(b)))
+    for s in ("SPY", "QQQ"):
+        b = bench(s, "2023-01-01", eqA.index[-1])
+        print(fmt(f"{s} buy&hold · OOS 2023-26", metrics(b)))
 
     print("\n── F1. Returns by year (PIT robot config vs SPY/QQQ) " + "─" * 42)
     yA = yearly(eqA); yS = yearly(bench("SPY", eqA.index[0], eqA.index[-1]))
