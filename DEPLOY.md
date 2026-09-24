@@ -1,68 +1,81 @@
-# investor — Despliegue en VM (24/7, dashboard en :8080)
+# Deploying on a Linux VM
 
-El sistema corre dos servicios systemd con reinicio automático:
-- **investor-robot** — el orquestador en loop (heartbeat 15min + rebalanceo diario + circuit breaker).
-- **investor-dashboard** — el dashboard "Mi Patrimonio" (FastAPI) en el puerto **8080**.
+Two systemd services, both restarted automatically:
 
-Default seguro: **DRY_RUN** (no envía órdenes). Para la demo se usa **PAPER**.
+- **investor-robot**: the orchestrator loop (15-minute heartbeat, daily and monthly
+  rebalance checks, circuit breaker).
+- **investor-dashboard**: the FastAPI dashboard on port **8080**.
 
----
+The safe default is **DRY_RUN** (no orders). `setup_vm.sh` configures **PAPER** mode, which
+trades Alpaca's paper account with simulated money.
 
-## 1. Probar local (sin riesgo)
+## 1. Try it locally first
+
 ```bash
 pip install -r requirements.txt
-cp .env.example .env            # rellena ALPACA_API_KEY / ALPACA_SECRET_KEY (paper)
-python engine/orchestrator.py            # un ciclo (DRY_RUN por defecto)
-python dashboard/server.py               # dashboard → http://127.0.0.1:8080
+cp .env.example .env                 # Alpaca PAPER keys
+python engine/orchestrator.py        # one cycle (DRY_RUN by default)
+python dashboard/server.py           # http://127.0.0.1:8080
 ```
 
-## 2. Desplegar en la VM (primera vez)
+## 2. First deployment
+
 ```bash
-# en la VM (Linux), como sudo:
+# on the VM (Linux), with sudo:
 sudo mkdir -p /opt/investor-app && cd /opt/investor-app
 sudo git clone https://github.com/oscardanielnc/momentum-investor.git
 cd momentum-investor
 sudo bash setup_vm.sh
 ```
-`setup_vm.sh` crea el venv, instala dependencias, crea `/etc/investor.env`, instala y habilita
-los dos servicios systemd, abre el puerto 8080 y arranca todo.
 
-**Después:** edita las claves y reinicia:
+`setup_vm.sh` creates a virtualenv, installs dependencies, writes `/etc/investor.env`
+(chmod 600, empty keys), installs and enables both services, opens port 8080 in the OS
+firewall, and starts everything.
+
+Then add the keys and restart:
+
 ```bash
-sudo nano /etc/investor.env     # ALPACA_API_KEY/SECRET (paper) + DEEPSEEK_API_KEY
-#   Modo: INVESTOR_DRY_RUN=false + INVESTOR_ALPACA_LIVE=false  → PAPER (demo)
+sudo nano /etc/investor.env     # ALPACA_API_KEY / ALPACA_SECRET_KEY (paper), DEEPSEEK_API_KEY (optional)
 sudo systemctl restart investor-robot investor-dashboard
 ```
-Abre también el **8080** en la consola del proveedor (Oracle VCN / Security List), no solo el firewall del SO.
 
-## 3. Operar y monitorear
+Also open port 8080 in the cloud provider's network rules (for example an Oracle VCN security
+list). The dashboard has no authentication: allow only the IP addresses that need it.
+
+## 3. Operate and monitor
+
 ```bash
 systemctl status investor-robot investor-dashboard
-journalctl -u investor-robot -f          # logs del robot en vivo
-journalctl -u investor-dashboard -f      # logs del dashboard
+journalctl -u investor-robot -f          # robot logs
+journalctl -u investor-dashboard -f      # dashboard logs
 ```
-Dashboard: `http://<IP-de-la-VM>:8080`
 
-## 4. Actualizar (deploys futuros)
+Dashboard: `http://<vm-ip>:8080`
+
+## 4. Update
+
 ```bash
 bash /opt/investor-app/momentum-investor/deploy.sh
 ```
-Hace `git pull`, instala deps, verifica imports y reinicia los servicios.
 
-## 5. Pasar a REAL (solo tras 1 semana de demo en paper sin errores)
-En `/etc/investor.env`: claves reales + `INVESTOR_ALPACA_LIVE=true`. Empezar con **$500** y subir
-gradualmente. `INVESTOR_DRY_RUN=false`.
+It runs `git pull`, installs dependencies, checks that the engine modules import, and restarts
+both services.
 
----
+## Modes (in `/etc/investor.env`)
 
-## Modos (en `/etc/investor.env`)
-| INVESTOR_DRY_RUN | INVESTOR_ALPACA_LIVE | Resultado |
+| INVESTOR_DRY_RUN | INVESTOR_ALPACA_LIVE | Result |
 |---|---|---|
-| true | — | Solo loguea, no envía órdenes (seguro) |
-| false | false | **PAPER** (cuenta de práctica) — la demo |
-| false | true | **REAL** (dinero real) |
+| true | any | Logs only, sends no orders |
+| false | false | PAPER account (simulated money) |
+| false | true | LIVE account (real money) |
 
-## Notas
-- Las claves viven en `/etc/investor.env` (chmod 600), **nunca en el repo**.
-- La VM debe estar siempre encendida para el 24/7; systemd reinicia los servicios si se caen o tras reboot.
-- El robot opera órdenes solo en horario de mercado US; el heartbeat y el circuit breaker corren 24/7.
+Live mode exists in the code but was never used. The research in this repository concluded
+that the robot's strategy does not beat buying QQQ (see the README), so running it with real
+money is not recommended.
+
+## Notes
+
+- Keys live in `/etc/investor.env` (chmod 600) and never in the repository.
+- The robot rebalances only during US market hours; the heartbeat, stop reconciliation and circuit breaker run
+  around the clock.
+- systemd restarts the services if they crash and after a reboot.
