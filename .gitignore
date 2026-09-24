@@ -1,27 +1,27 @@
-# ───────── SECRETOS Y ESTADO REAL — NUNCA subir ─────────
+# Secrets and live state: never commit
 .env
 .env.local
 *.key
 *.pem
 
-# Documentos internos de sesión (bitácora, decisiones, estado privado)
+# Private working notes
 private/
 
-# Base de datos / estado vivo del robot (montos reales, posiciones, logs)
+# Robot database and live state (balances, positions, logs)
 data/
 *.db
 *.db-wal
 *.db-shm
 *.sqlite
 
-# Datos de mercado descargados (grandes, regenerables)
+# Downloaded market data (large, regenerable)
 research/data_db/
 research/data_etf/
 research/data_etf_long/
 research/data_fund/
 *.parquet
 
-# Logs y temporales
+# Logs and temporary files
 *.log
 dashboard/_server.log
 research/_*.txt
@@ -42,5 +42,5 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Datos PIT: parquets regenerables (ignorados), CSVs de membresía chicos (sí se versionan)
+# Point-in-time data: parquet prices are regenerable (ignored); membership CSVs are versioned
 research/data_pit/*.parquet
