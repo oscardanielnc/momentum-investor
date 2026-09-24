@@ -77,6 +77,7 @@ def fetch(sym):
 
 
 def load_panel(field="close"):
+    """Date x symbol frame of `field` for the whole menu (cached)."""
     px = {}
     for s in ALL:
         df = fetch(s)

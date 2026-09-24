@@ -31,6 +31,7 @@ CRASHES = {
 }
 
 def metrics(r):
+    """(CAGR, annual vol, Sharpe with rf=0, maxDD) from daily returns (252-day CAGR)."""
     r = r.dropna(); eq = (1+r).cumprod(); n = len(r)
     cagr = eq.iloc[-1]**(252/n) - 1
     vol = r.std()*np.sqrt(252)

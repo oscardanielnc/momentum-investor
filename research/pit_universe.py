@@ -114,5 +114,6 @@ class Membership:
         self.sets = [frozenset(t.strip() for t in s.split(",")) for s in rows["tickers"]]
 
     def asof(self, d):
+        """Members on date d: the latest membership snapshot on or before d."""
         i = np.searchsorted(self.dates, np.datetime64(d), side="right") - 1
         return self.sets[max(i, 0)]

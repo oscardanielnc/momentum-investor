@@ -22,6 +22,7 @@ CASH = "SHY"
 COST_BPS = {**{s: 10 for s in STOCKS}, **{s: 4 for s in BASE+["SMH"]}}
 
 def metrics(r):
+    """(CAGR, annual vol, Sharpe with rf=0, maxDD) from daily returns."""
     r = r.dropna(); eq=(1+r).cumprod(); n=len(r)
     return (eq.iloc[-1]**(252/n)-1, r.std()*np.sqrt(252),
             (r.mean()*252)/(r.std()*np.sqrt(252)) if r.std()>0 else 0,

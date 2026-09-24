@@ -24,6 +24,7 @@ COST_BPS={**{s:10 for s in STOCKS}, **{s:4 for s in BASE+["SMH"]}}
 CRASHES={"2018-Q4":("2018-09-20","2018-12-26"),"COVID-20":("2020-02-19","2020-03-23"),"Bear-22":("2022-01-03","2022-10-12")}
 
 def metrics(r):
+    """(CAGR, Sharpe with rf=0, maxDD) from daily returns."""
     r=r.dropna(); eq=(1+r).cumprod(); n=len(r)
     return (eq.iloc[-1]**(252/n)-1, (r.mean()*252)/(r.std()*np.sqrt(252)) if r.std()>0 else 0, (eq/eq.cummax()-1).min())
 

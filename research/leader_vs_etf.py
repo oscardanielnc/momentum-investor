@@ -29,6 +29,7 @@ TICKERS = ["MU", "WDC", "STX", "SNDK", "NVDA", "AVGO", "MRVL", "SMH", "SOXX", "X
 START = "2020-07-27"; END = dt.date.today().isoformat()
 
 def fetch(sym):
+    """Adjusted daily closes of `sym` from Alpaca since START, or None."""
     rows, tok = [], None
     while True:
         p = {"symbols": sym, "timeframe": "1Day", "start": START, "end": END,

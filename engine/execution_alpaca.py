@@ -92,6 +92,7 @@ def get_positions():
                           "avg": float(p["avg_entry_price"])} for p in d}
 
 def market_open():
+    """Whether the US market is open now, per Alpaca's clock (False if unreadable)."""
     d = _req("GET", "/v2/clock")
     return bool(d.get("is_open")) if isinstance(d, dict) else False
 
@@ -161,6 +162,7 @@ def close_position(symbol):
     return _req("DELETE", f"/v2/positions/{symbol}")
 
 def cancel_all_orders():
+    """Cancel every open order, trailing stops included."""
     if DRY_RUN:
         log.info("[alpaca] DRY cancel_all_orders"); return {"dry_run": True}
     return _req("DELETE", "/v2/orders")

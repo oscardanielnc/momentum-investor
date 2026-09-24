@@ -197,6 +197,7 @@ def run(O, H, L, C, membership=None, universe=None, topn=TOPN, trail=TRAIL, lb=L
 
 # ── Report ────────────────────────────────────────────────────────────────────────────────────
 def yearly(eq):
+    """{year: return} from an equity curve (first to last point of each calendar year)."""
     y = eq.resample("YE").last() / eq.resample("YE").first() - 1
     return {ts.year: v for ts, v in y.items()}
 

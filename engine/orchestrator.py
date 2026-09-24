@@ -54,6 +54,8 @@ def _pid_alive(pid):
 
 
 def acquire_lock():
+    """Take the single-instance lock (data/orchestrator.lock) or raise if a live process holds it.
+    A lock left by a dead process is taken over. The lock file is removed at exit."""
     os.makedirs(os.path.dirname(_LOCK), exist_ok=True)
     if os.path.exists(_LOCK):
         try:
@@ -334,6 +336,7 @@ def run_cycle(d: DB, now=None):
 
 
 def main():
+    """Entry point: one cycle by default, or a loop every HEARTBEAT_S seconds with --loop."""
     d = DB()
     d.set_config("mode", ex.mode_str())
     d.log("INFO", "orchestrator", f"start · mode {ex.mode_str()} · heartbeat {HEARTBEAT_S}s")

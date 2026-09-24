@@ -42,6 +42,7 @@ UNIVERSE = ETFS + STOCKS + STOCKS_MULTI
 
 _client = None
 def client():
+    """Lazily created Databento client."""
     global _client
     if _client is None:
         _client = db.Historical(KEY)

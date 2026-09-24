@@ -18,6 +18,7 @@ BASE=["XLV","XLP","XLU","XLE","GLD","DBC","TLT","SHY","EEM","EFA","QQQ"]; CASH="
 COST_BPS={**{s:10 for s in STOCKS}, **{s:4 for s in BASE+["SMH"]}}
 
 def metrics(r):
+    """(CAGR, annual vol, Sharpe with rf=0, maxDD) from daily returns; NaNs below 30 points."""
     r=r.dropna()
     if len(r)<30: return (np.nan,)*4
     eq=(1+r).cumprod(); n=len(r)

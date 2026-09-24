@@ -42,6 +42,7 @@ ALL = [s for v in CAND.values() for s in v]
 START = "2020-07-27"; END = dt.date.today().isoformat()
 
 def fetch(sym):
+    """Adjusted daily closes of `sym` from Alpaca since START, or None."""
     rows, token = [], None
     while True:
         p = {"symbols": sym, "timeframe": "1Day", "start": START, "end": END,

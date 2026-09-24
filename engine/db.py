@@ -51,6 +51,7 @@ class DB:
 
     # ── Logs ──
     def log(self, level, component, message, context: dict | None = None):
+        """Append to app_log. Never raises."""
         try:
             self._ex("INSERT INTO app_log(ts,level,component,message,context_json) VALUES(?,?,?,?,?)",
                      (_now(), level, component, message, json.dumps(context) if context else None))
@@ -58,6 +59,7 @@ class DB:
             pass
 
     def log_error(self, component, message, exc: Exception | None = None, error_type=None):
+        """Append to error_log with the traceback of `exc`, if given. Never raises."""
         try:
             tb = "".join(_tb.format_exception(type(exc), exc, exc.__traceback__)) if exc else None
             self._ex("INSERT INTO error_log(ts,component,error_type,message,traceback) VALUES(?,?,?,?,?)",
@@ -108,6 +110,7 @@ class DB:
 
     # ── Portfolio: target weights, orders, positions ──
     def record_target(self, rebalance_id, weights: dict, reasons: dict | None = None):
+        """Store the target weights of one rebalance, with an optional reason per symbol."""
         ts = _now(); reasons = reasons or {}
         for sym, w in weights.items():
             self._ex("INSERT OR REPLACE INTO target_weight(rebalance_id,ts,symbol,weight,reason) "
