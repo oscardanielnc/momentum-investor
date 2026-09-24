@@ -1,27 +1,29 @@
 """
-investor — BACKTEST v11: ¿hay algo que supere a QQQ buy&hold?  (encargo de Oscar, 02-jul-2026)
+Backtest v11: is there anything that beats QQQ buy and hold?
 
-Familias testeadas — todas REGLAS sobre menús pre-especificados (nada elegido por su
-rendimiento pasado; ese fue el pecado del v1-v9):
+Every family tested is a RULE over a menu fixed in advance; nothing is picked because of its
+past performance (that was the mistake behind v1-v9).
 
-  0. Descriptivo: B&H de todo el menú (incl. China/Asia) — para ver el paisaje, CON advertencia
-     de que elegir el ganador de esta tabla sería hindsight.
-  1. Overlays de régimen sobre QQQ: SMA200 diaria (con banda anti-whipsaw), SMA200 evaluada
-     mensual (Faber), momentum absoluto 12m vs caja. Ventanas 1999+ (dot-com), 2007+ (GFC),
-     2018-10+ (comparable al v10).
-  2. Apalancados: QLD/TQQQ B&H vs con filtro SMA200 (señal en QQQ, se opera el apalancado).
-  3. Rotación de SECTORES: los 11 SPDR completos, mensual top-K por momentum (12-1 / 6m /
-     riskadj90 del robot), con y sin puerta absoluta (→ caja), con histéresis de rango.
-  4. Rotación de PAÍSES/global: menú completo de regiones + SPY/QQQ, mensual top-K.
-  5. Dual momentum (GEM agresivo): QQQ vs EFA vs caja, 12m.
-  6. Validación temporal: la mejor regla de cada familia elegida SOLO con datos ≤2015 y
-     evaluada 2016-2026 (walk-forward de reglas, no de parámetros).
+  0. Descriptive: buy and hold of the whole menu (China/Asia included), to see the landscape,
+     with the caveat that picking the winner from this table would be hindsight.
+  1. Regime overlays on QQQ: daily SMA200 (with an anti-whipsaw band), SMA200 evaluated
+     monthly (Faber), 12-month absolute momentum vs cash. Windows 1999+ (dot-com), 2007+
+     (GFC), 2018-10+ (comparable with v10).
+  2. Leveraged ETFs: QLD/TQQQ buy and hold vs with the SMA200 filter (signal on QQQ, the
+     leveraged ETF is traded).
+  3. SECTOR rotation: all 11 SPDR sectors, monthly top-K by momentum (12-1 / 6m / the robot's
+     riskadj90), with and without an absolute gate (to cash), with rank hysteresis.
+  4. COUNTRY/global rotation: a full menu of regions + SPY/QQQ, monthly top-K.
+  5. Dual momentum (aggressive GEM): QQQ vs EFA vs cash, 12 months.
+  6. Temporal validation: the best rule of each family is chosen ONLY with data up to 2015
+     and evaluated on 2016-2026 (walk-forward of rules, not of parameters).
+  7. Core + satellite combos sized against a -30% drawdown cap.
 
-Datos: yfinance auto_adjust=True → TOTAL RETURN (dividendos incluidos, a diferencia de v10).
-Ejecución: señal al cierre → se opera al OPEN del día siguiente. Costos 10 bps one-way.
-Caja: BIL (T-bills), antes de 2007 SHY, antes de 2002 retorno 0.
+Data: yfinance auto_adjust=True, i.e. TOTAL RETURN (dividends included, unlike v10).
+Execution: signal at the close, traded at the next day's open. Costs 10 bps one-way.
+Cash: BIL (T-bills), SHY before BIL existed, 0% before 2002.
 
-Uso:  python research/backtest_v11_etf.py
+Usage:  python research/backtest_v11_etf.py
 """
 import os, sys
 import numpy as np, pandas as pd
@@ -35,13 +37,14 @@ os.makedirs(CACHE, exist_ok=True)
 MENU_ALL = ("QQQ SPY DIA IWM MDY XLK XLY XLP XLE XLF XLV XLI XLB XLU XLRE XLC SMH IGV XBI "
             "EFA EEM EWJ EWY EWT EWZ FXI ILF MCHI KWEB ASHR INDA TLT IEF SHY GLD BIL "
             "MTUM SPMO VUG IWY QUAL USMV QLD SSO TQQQ").split()
-SECTORES = "XLK XLY XLP XLE XLF XLV XLI XLB XLU XLRE XLC".split()
-PAISES   = "SPY QQQ EFA EEM EWJ EWY EWT EWZ FXI ILF MCHI INDA KWEB ASHR".split()
+SECTORS   = "XLK XLY XLP XLE XLF XLV XLI XLB XLU XLRE XLC".split()
+COUNTRIES = "SPY QQQ EFA EEM EWJ EWY EWT EWZ FXI ILF MCHI INDA KWEB ASHR".split()
 COST = 10 / 1e4
 
 
-# ── Datos ─────────────────────────────────────────────────────────────────────────────────────
+# ── Data ──────────────────────────────────────────────────────────────────────────────────────
 def load():
+    """(Open, Close) total-return panels for MENU_ALL since 1998-11, cached in data_etf_long/."""
     po, pc = os.path.join(CACHE, "open.parquet"), os.path.join(CACHE, "close.parquet")
     if os.path.exists(pc):
         return pd.read_parquet(po), pd.read_parquet(pc)
@@ -53,9 +56,9 @@ def load():
 
 
 def cash_ret(C):
-    """Retorno diario de la 'caja': BIL → SHY → 0."""
+    """Daily return of 'cash': BIL, else SHY, else 0."""
     r = pd.Series(0.0, index=C.index)
-    for proxy in ("SHY", "BIL"):        # BIL pisa a SHY donde existe
+    for proxy in ("SHY", "BIL"):        # BIL overrides SHY where it exists
         if proxy in C:
             rp = C[proxy].pct_change()
             r[rp.notna()] = rp[rp.notna()]
@@ -63,6 +66,7 @@ def cash_ret(C):
 
 
 def metrics(eq):
+    """CAGR, max drawdown, Sharpe (rf=0) and Calmar from an equity curve (calendar-day CAGR)."""
     eq = eq.dropna()
     yrs = (eq.index[-1] - eq.index[0]).days / 365.25
     if yrs <= 0 or eq.iloc[0] <= 0:
@@ -83,15 +87,21 @@ def fmt(name, m, qqq=None):
 
 
 def bh(C, sym, a, b):
+    """Normalized buy-and-hold curve of `sym` between dates a and b."""
     px = C[sym].dropna()
     px = px[(px.index >= a) & (px.index <= b)]
     return px / px.iloc[0]
 
 
-# ── 1. Overlays sobre un solo activo ─────────────────────────────────────────────────────────
+# ── 1. Single-asset overlays ─────────────────────────────────────────────────────────────────
 def overlay(O, C, sym, rule, a, b, cash, signal_sym=None, band=0.0, monthly=False):
-    """rule: 'sma200' | 'absmom12'. Señal con el cierre de t → ejecuta al open de t+1.
-    signal_sym: activo que genera la señal (p.ej. QQQ) aunque se opere `sym` (p.ej. QLD)."""
+    """Hold `sym` when the rule is ON, cash when OFF. Returns the equity curve.
+
+    rule: 'sma200' | 'absmom12'. Signal on the close of t, executed at the open of t+1.
+    signal_sym: asset that generates the signal (e.g. QQQ) when trading another (e.g. QLD).
+    band: hysteresis around the SMA (0.01 = must cross 1% above/below to switch).
+    monthly: only re-evaluate on the last trading day of each month.
+    """
     sig_px = C[signal_sym or sym].dropna()
     px_c = C[sym].dropna()
     idx = px_c.index.intersection(sig_px.index)
@@ -104,17 +114,17 @@ def overlay(O, C, sym, rule, a, b, cash, signal_sym=None, band=0.0, monthly=Fals
         raw_off = sig_px < sma * (1 - band)
         on = pd.Series(np.where(raw_on, 1.0, np.where(raw_off, 0.0, np.nan)), index=idx)
         on = on.ffill().fillna(1.0).astype(bool)
-    else:  # absmom12: retorno 12m del activo señal > retorno 12m de la caja
+    else:  # absmom12: 12-month return of the signal asset > 12-month return of cash
         r12 = sig_px / sig_px.shift(252) - 1
         cash_idx = (1 + cash.reindex(idx).fillna(0)).cumprod()
         c12 = cash_idx / cash_idx.shift(252) - 1
         on = (r12 > c12).fillna(True)
-    if monthly:                          # solo se decide en el último día del mes
+    if monthly:                          # decide only on the last day of the month
         me = on.groupby([idx.year, idx.month]).tail(1).index
         on = on.astype(float).where(on.index.isin(me)).ffill().fillna(1.0).astype(bool)
     ret_c = px_c.pct_change().fillna(0)
-    ret_co = (px_o / px_c.shift(1) - 1).fillna(0)   # cierre t-1 → open t
-    ret_oc = (px_c / px_o - 1).fillna(0)            # open t → cierre t
+    ret_co = (px_o / px_c.shift(1) - 1).fillna(0)   # close t-1 -> open t
+    ret_oc = (px_c / px_o - 1).fillna(0)            # open t -> close t
     cash_r = cash.reindex(idx).fillna(0)
     pos_prev = on.shift(1).fillna(True)
     pos_prev2 = on.shift(2).fillna(True)
@@ -122,21 +132,24 @@ def overlay(O, C, sym, rule, a, b, cash, signal_sym=None, band=0.0, monthly=Fals
     eq = 1.0
     for i in range(len(idx)):
         p_now, p_prev = pos_prev.iloc[i], pos_prev2.iloc[i]
-        if p_now == p_prev:              # sin cambio: día completo en el estado
+        if p_now == p_prev:              # no change: the whole day in the current state
             eq *= (1 + ret_c.iloc[i]) if p_now else (1 + cash_r.iloc[i])
-        elif p_now and not p_prev:       # entra al open de hoy
+        elif p_now and not p_prev:       # enters at today's open
             eq *= (1 + ret_oc.iloc[i]); eq *= (1 - COST)
-        else:                            # sale al open de hoy
+        else:                            # exits at today's open
             eq *= (1 + ret_co.iloc[i]); eq *= (1 - COST)
             eq *= (1 + cash_r.iloc[i] * 0.5)
         out.append(eq)
     return pd.Series(out, index=idx)
 
 
-# ── 3/4. Rotación mensual top-K sobre un menú ────────────────────────────────────────────────
+# ── 3/4. Monthly top-K rotation over a menu ──────────────────────────────────────────────────
 def rotation(O, C, menu, a, b, k=2, score="12-1", gate=False, hyst=0, cash=None):
-    """Mensual: al cierre del último día del mes ranquea el menú; ejecuta al open siguiente.
-    hyst: mantiene un ETF tenido mientras siga en el top-(k+hyst). gate: 12m<caja → ese slot a caja."""
+    """Monthly: rank the menu at the last close of the month; execute at the next open.
+
+    score: '12-1' | '6m' | 'riskadj90'. hyst: keep a held ETF while it stays in the top k+hyst.
+    gate: a slot whose 12-month return is below cash goes to cash. Returns the equity curve.
+    """
     cols = [s for s in menu if s in C.columns]
     Cm = C[cols]
     idx = Cm.dropna(how="all").index
@@ -146,7 +159,7 @@ def rotation(O, C, menu, a, b, k=2, score="12-1", gate=False, hyst=0, cash=None)
         S = Cm.shift(21) / Cm.shift(252) - 1
     elif score == "6m":
         S = Cm / Cm.shift(126) - 1
-    else:  # riskadj90 (la señal del robot)
+    else:  # riskadj90 (the robot's signal)
         S = ((Cm / Cm.shift(90) - 1) * (252 / 90)) / (Cm.pct_change().rolling(20).std() * np.sqrt(252))
     cash_r = (cash if cash is not None else pd.Series(0.0, index=idx)).reindex(idx).fillna(0)
     cash_idx = (1 + cash_r).cumprod()
@@ -158,7 +171,7 @@ def rotation(O, C, menu, a, b, k=2, score="12-1", gate=False, hyst=0, cash=None)
     pending = None
     for i, d in enumerate(idx):
         if pending is not None and i > 0:
-            # ejecutar al open de hoy: retorno open→close para lo nuevo, y costo por turnover
+            # execute at today's open: open->close return for the new holdings, cost by turnover
             new = pending; pending = None
             turn = len(set(new) ^ set(held)) / max(k, 1)
             day_r = 0.0
@@ -167,7 +180,7 @@ def rotation(O, C, menu, a, b, k=2, score="12-1", gate=False, hyst=0, cash=None)
                 day_r += oc / max(len(new), 1)
             n_cash = k - len(new)
             day_r = day_r * (len(new) / k) + cash_r.iloc[i] * (n_cash / k)
-            # lo viejo se vendió al open: cierre t-1 → open t
+            # the old holdings were sold at the open: close t-1 -> open t
             carry = 0.0
             for s in held:
                 co = Om[s].iloc[i] / Cm[s].iloc[i - 1] - 1 if np.isfinite(Om[s].iloc[i]) else 0.0
@@ -205,19 +218,19 @@ def rotation(O, C, menu, a, b, k=2, score="12-1", gate=False, hyst=0, cash=None)
     return pd.Series(out, index=idx)
 
 
-# ── Reporte ───────────────────────────────────────────────────────────────────────────────────
+# ── Report ────────────────────────────────────────────────────────────────────────────────────
 def main():
     O, C = load()
     cash = cash_ret(C)
     W = [("1999-2026 (dot-com+GFC)", "1999-03-10", "2026-07-01"),
          ("2007-2026 (GFC)",         "2007-06-01", "2026-07-01"),
-         ("2018-10 → 2026 (=v10)",   "2018-10-01", "2026-07-01")]
+         ("2018-10 -> 2026 (=v10)",  "2018-10-01", "2026-07-01")]
 
     print("=" * 100)
-    print("v11 — ¿QUÉ SUPERA A QQQ B&H? · total return · señal al cierre→open siguiente · 10bps")
+    print("v11 · WHAT BEATS QQQ BUY & HOLD? · total return · signal at close -> next open · 10bps")
     print("=" * 100)
 
-    print("\n── 0. PAISAJE B&H del menú (2018-10→2026; ⚠️ elegir el ganador de aquí = hindsight) ──")
+    print("\n── 0. Buy & hold LANDSCAPE of the menu (2018-10 -> 2026; picking the winner here = hindsight) ──")
     rows = []
     for s in MENU_ALL:
         if s in C.columns and C[s].loc["2018-10-01":"2026-07-01"].notna().sum() > 1800:
@@ -228,74 +241,74 @@ def main():
 
     for wname, a, b in W:
         qqq = metrics(bh(C, "QQQ", a, b))
-        print(f"\n── 1. OVERLAYS sobre QQQ · ventana {wname} " + "─" * 40)
+        print(f"\n── 1. OVERLAYS on QQQ · window {wname} " + "─" * 40)
         print(fmt("QQQ buy&hold", qqq))
         for name, kw in [
-            ("QQQ + SMA200 diaria", dict(rule="sma200")),
-            ("QQQ + SMA200 diaria banda 1%", dict(rule="sma200", band=0.01)),
-            ("QQQ + SMA200 eval. mensual (Faber)", dict(rule="sma200", monthly=True)),
-            ("QQQ + momentum absoluto 12m (mensual)", dict(rule="absmom12", monthly=True)),
+            ("QQQ + daily SMA200", dict(rule="sma200")),
+            ("QQQ + daily SMA200 1% band", dict(rule="sma200", band=0.01)),
+            ("QQQ + SMA200 monthly eval (Faber)", dict(rule="sma200", monthly=True)),
+            ("QQQ + 12m absolute momentum (monthly)", dict(rule="absmom12", monthly=True)),
         ]:
             eq = overlay(O, C, "QQQ", a=a, b=b, cash=cash, **kw)
             print(fmt(name, metrics(eq), qqq))
 
-    print("\n── 2. APALANCADOS (la vía estructural de 'más que QQQ') " + "─" * 40)
+    print("\n── 2. LEVERAGED (the structural route to 'more than QQQ') " + "─" * 38)
     for sym, a0 in (("QLD", "2006-07-01"), ("TQQQ", "2010-03-01")):
         for wname, a, b in W:
             a = max(a, a0)
             qqq = metrics(bh(C, "QQQ", a, b))
-            print(f"  · {sym} desde {a[:7]} ({wname}):")
+            print(f"  · {sym} from {a[:7]} ({wname}):")
             print(fmt(f"    {sym} B&H", metrics(bh(C, sym, a, b)), qqq))
             eq = overlay(O, C, sym, rule="sma200", a=a, b=b, cash=cash, signal_sym="QQQ", band=0.01)
-            print(fmt(f"    {sym} + SMA200(QQQ) banda 1%", metrics(eq), qqq))
+            print(fmt(f"    {sym} + SMA200(QQQ) 1% band", metrics(eq), qqq))
 
-    print("\n── 3. ROTACIÓN DE SECTORES (11 SPDR, mensual) " + "─" * 50)
+    print("\n── 3. SECTOR ROTATION (11 SPDR, monthly) " + "─" * 55)
     for wname, a, b in W:
         qqq = metrics(bh(C, "QQQ", a, b))
         spy = metrics(bh(C, "SPY", a, b))
-        print(f"  ventana {wname}  (SPY {spy['CAGR']*100:.1f}% / QQQ {qqq['CAGR']*100:.1f}%)")
+        print(f"  window {wname}  (SPY {spy['CAGR']*100:.1f}% / QQQ {qqq['CAGR']*100:.1f}%)")
         for name, kw in [
             ("top-1 12-1", dict(k=1, score="12-1")),
             ("top-2 12-1", dict(k=2, score="12-1")),
             ("top-3 12-1", dict(k=3, score="12-1")),
-            ("top-2 12-1 + gate caja", dict(k=2, score="12-1", gate=True)),
-            ("top-2 12-1 + histéresis 2", dict(k=2, score="12-1", hyst=2)),
-            ("top-2 riskadj90 (señal robot)", dict(k=2, score="riskadj90")),
+            ("top-2 12-1 + cash gate", dict(k=2, score="12-1", gate=True)),
+            ("top-2 12-1 + hysteresis 2", dict(k=2, score="12-1", hyst=2)),
+            ("top-2 riskadj90 (robot signal)", dict(k=2, score="riskadj90")),
             ("top-2 6m", dict(k=2, score="6m")),
         ]:
-            eq = rotation(O, C, SECTORES, a, b, cash=cash, **kw)
-            print(fmt(f"    sectores {name}", metrics(eq), qqq))
+            eq = rotation(O, C, SECTORS, a, b, cash=cash, **kw)
+            print(fmt(f"    sectors {name}", metrics(eq), qqq))
 
-    print("\n── 4. ROTACIÓN PAÍSES/GLOBAL (incl. China/Asia, mensual) " + "─" * 40)
+    print("\n── 4. COUNTRY/GLOBAL ROTATION (China/Asia included, monthly) " + "─" * 36)
     for wname, a, b in [W[1], W[2]]:
         qqq = metrics(bh(C, "QQQ", a, b))
-        print(f"  ventana {wname}")
+        print(f"  window {wname}")
         for name, kw in [
             ("top-1 12-1", dict(k=1, score="12-1")),
             ("top-2 12-1", dict(k=2, score="12-1")),
-            ("top-2 12-1 + gate caja", dict(k=2, score="12-1", gate=True)),
+            ("top-2 12-1 + cash gate", dict(k=2, score="12-1", gate=True)),
             ("top-2 riskadj90", dict(k=2, score="riskadj90")),
         ]:
-            eq = rotation(O, C, PAISES, a, b, cash=cash, **kw)
-            print(fmt(f"    países {name}", metrics(eq), qqq))
+            eq = rotation(O, C, COUNTRIES, a, b, cash=cash, **kw)
+            print(fmt(f"    countries {name}", metrics(eq), qqq))
 
-    print("\n── 5. DUAL MOMENTUM (GEM agresivo: QQQ/EFA/caja, 12m, mensual) " + "─" * 34)
+    print("\n── 5. DUAL MOMENTUM (aggressive GEM: QQQ/EFA/cash, 12m, monthly) " + "─" * 32)
     for wname, a, b in W:
         qqq = metrics(bh(C, "QQQ", a, b))
         eq = rotation(O, C, ["QQQ", "EFA"], a, b, k=1, score="12-1", gate=True, cash=cash)
         print(fmt(f"  GEM {wname}", metrics(eq), qqq))
 
-    print("\n── 6. VALIDACIÓN TEMPORAL: elegido con ≤2015, evaluado 2016-2026 " + "─" * 32)
+    print("\n── 6. TEMPORAL VALIDATION: chosen with data <= 2015, evaluated 2016-2026 " + "─" * 25)
     fams = {
-        "overlay": [("SMA200 diaria b1%", lambda a, b: overlay(O, C, "QQQ", "sma200", a, b, cash, band=0.01)),
-                    ("SMA200 mensual", lambda a, b: overlay(O, C, "QQQ", "sma200", a, b, cash, monthly=True)),
+        "overlay": [("SMA200 daily b1%", lambda a, b: overlay(O, C, "QQQ", "sma200", a, b, cash, band=0.01)),
+                    ("SMA200 monthly", lambda a, b: overlay(O, C, "QQQ", "sma200", a, b, cash, monthly=True)),
                     ("absmom12", lambda a, b: overlay(O, C, "QQQ", "absmom12", a, b, cash, monthly=True))],
-        "sectores": [(f"top-{k} {sc}" + ("+gate" if g else ""),
-                      (lambda k=k, sc=sc, g=g: lambda a, b: rotation(O, C, SECTORES, a, b, k=k, score=sc, gate=g, cash=cash))())
-                     for k in (1, 2, 3) for sc in ("12-1", "6m") for g in (False, True)],
-        "paises":   [(f"top-{k} 12-1" + ("+gate" if g else ""),
-                      (lambda k=k, g=g: lambda a, b: rotation(O, C, PAISES, a, b, k=k, score="12-1", gate=g, cash=cash))())
-                     for k in (1, 2) for g in (False, True)],
+        "sectors": [(f"top-{k} {sc}" + ("+gate" if g else ""),
+                     (lambda k=k, sc=sc, g=g: lambda a, b: rotation(O, C, SECTORS, a, b, k=k, score=sc, gate=g, cash=cash))())
+                    for k in (1, 2, 3) for sc in ("12-1", "6m") for g in (False, True)],
+        "countries": [(f"top-{k} 12-1" + ("+gate" if g else ""),
+                       (lambda k=k, g=g: lambda a, b: rotation(O, C, COUNTRIES, a, b, k=k, score="12-1", gate=g, cash=cash))())
+                      for k in (1, 2) for g in (False, True)],
     }
     for fam, variants in fams.items():
         best, bm = None, None
@@ -305,13 +318,13 @@ def main():
                 best, bm = (name, f), m
         m_oos = metrics(best[1]("2016-01-01", "2026-07-01"))
         qqq_oos = metrics(bh(C, "QQQ", "2016-01-01", "2026-07-01"))
-        print(f"  {fam:9s} mejor ≤2015: {best[0]:22s} (Calmar IS {bm['Calmar']:.2f}) → OOS 2016-26: "
+        print(f"  {fam:9s} best <=2015: {best[0]:22s} (IS Calmar {bm['Calmar']:.2f}) -> OOS 2016-26: "
               + fmt("", m_oos, qqq_oos).strip())
-    print(fmt("  QQQ B&H 2016-26 (la vara)", metrics(bh(C, "QQQ", "2016-01-01", "2026-07-01"))))
+    print(fmt("  QQQ B&H 2016-26 (the bar)", metrics(bh(C, "QQQ", "2016-01-01", "2026-07-01"))))
 
-    print("\n── 7. COMBO dosificado al tope −30%: núcleo QQQ filtrado + satélite apalancado filtrado ──")
-    print("   (⚠️ TQQQ nace en 2010: sus filas NO incluyen 2008; un 3x en 2008 habría sido −90%+.")
-    print("    Para un tope −30% serio el satélite honesto es QLD (2x), que sí vivió la GFC.)")
+    print("\n── 7. COMBO sized to a -30% cap: filtered QQQ core + filtered leveraged satellite ──")
+    print("   (TQQQ starts in 2010: its rows do NOT include 2008; a 3x fund in 2008 would have lost 90%+.")
+    print("    For a serious -30% cap the honest satellite is QLD (2x), which did live through the GFC.)")
 
     def combo(lam, lev, a, b):
         core = overlay(O, C, "QQQ", "sma200", a, b, cash, band=0.01)
@@ -321,12 +334,12 @@ def main():
              + lam * sat.reindex(idx).pct_change().fillna(0))
         return (1 + r).cumprod()
 
-    for wname, a, b, levs in [("2006-07→2026 (GFC incluida)", "2006-07-01", "2026-07-01", ["QLD"]),
-                              ("2010-03→2026 (sin GFC)", "2010-03-01", "2026-07-01", ["QLD", "TQQQ"]),
-                              ("2018-10→2026 (=v10)", "2018-10-01", "2026-07-01", ["QLD", "TQQQ"])]:
+    for wname, a, b, levs in [("2006-07 -> 2026 (GFC included)", "2006-07-01", "2026-07-01", ["QLD"]),
+                              ("2010-03 -> 2026 (no GFC)", "2010-03-01", "2026-07-01", ["QLD", "TQQQ"]),
+                              ("2018-10 -> 2026 (=v10)", "2018-10-01", "2026-07-01", ["QLD", "TQQQ"])]:
         qqq = metrics(bh(C, "QQQ", a, b))
-        print(f"  ventana {wname} · " + fmt("QQQ B&H", qqq).strip())
-        print("  " + fmt("núcleo QQQ+SMA200 b1% solo", metrics(combo(0.0, "QLD", a, b)), qqq))
+        print(f"  window {wname} · " + fmt("QQQ B&H", qqq).strip())
+        print("  " + fmt("core QQQ+SMA200 b1% only", metrics(combo(0.0, "QLD", a, b)), qqq))
         for lev in levs:
             for lam in (0.2, 0.3, 0.5):
                 print("  " + fmt(f"{(1-lam)*100:.0f}% QQQf + {lam*100:.0f}% {lev}f",

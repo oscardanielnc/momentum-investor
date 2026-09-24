@@ -1,14 +1,16 @@
 """
-investor — A vs B: ¿caja en el vol-parity (A, validado) o diversificadores reales de pie (B)?
-Pregunta de Oscar: que un crash sorpresa no afecte tanto. Mido cuánto retorno cuesta B.
+Backtest v4: cash inside the inverse-volatility base (A) versus always-on diversifiers (B).
 
-A (actual/validado): base = vol-parity sobre TODOS los diversificadores incl. SHY (cash) →
-   en momentum fuerte la base se va casi toda a caja (SHY), diversificadores reales ~1-2%.
-B (variante):        base = vol-parity sobre diversificadores REALES (SHY EXCLUIDO) → siempre
-   hay oro/bonos/energía/defensivos de pie; la caja solo aparece por el freno DD.
+Question: how much return does it cost to keep real diversifiers invested so that a surprise
+crash hurts less?
 
-Config bloqueada: lookback 90, top-3, mensual, banda 5%, costos ON. Global + por crash.
-Uso: python research/backtest_v4_baseAB.py
+A: base = inverse-volatility weights over all diversifiers including SHY (cash). In strong
+   momentum the base drifts almost entirely into SHY.
+B: base = inverse-volatility weights over real diversifiers only (SHY excluded), so gold,
+   bonds, energy and defensives are always held; cash appears only through the drawdown brake.
+
+Fixed config: lookback 90, top-3, monthly, 5% band, with costs. Global and per crash.
+Usage: python research/backtest_v4_baseAB.py
 """
 import sys
 import numpy as np, pandas as pd
@@ -26,7 +28,8 @@ def metrics(r):
     return (eq.iloc[-1]**(252/n)-1, (r.mean()*252)/(r.std()*np.sqrt(252)) if r.std()>0 else 0, (eq/eq.cummax()-1).min())
 
 def build(P,R,mode="A",lb=90,topn=3,band=0.05):
-    base = BASE if mode=="A" else DIVS    # B excluye la caja del vol-parity
+    """Simulate variant A or B. Returns daily returns."""
+    base = BASE if mode=="A" else DIVS    # B excludes cash from the inverse-volatility base
     stocks=[s for s in STOCKS if s in P]; rebset=set(P.resample("ME").last().index)
     def vp(assets,asof,frac):
         assets=[a for a in assets if a in R.columns]
@@ -45,7 +48,7 @@ def build(P,R,mode="A",lb=90,topn=3,band=0.05):
         w=vp(base,asof,1-t)
         for s in rk: w[s]=w.get(s,0)+t/len(rk)
         tot=sum(w.values())
-        if tot<0.999: w[CASH]=w.get(CASH,0)+(1-tot)   # remanente (freno) → caja
+        if tot<0.999: w[CASH]=w.get(CASH,0)+(1-tot)   # remainder (brake) goes to cash
         return w
     days=R.index; w={}; E=1.0; peak=1.0; rets={}
     for i,day in enumerate(days):
@@ -66,15 +69,15 @@ def build(P,R,mode="A",lb=90,topn=3,band=0.05):
     return pd.Series(rets)
 
 def main():
-    print("Cargando panel…"); P=load_panel(); R=P.pct_change()
+    print("Loading panel..."); P=load_panel(); R=P.pct_change()
     print("\n"+"="*60+"\nGLOBAL 2018+\n"+"="*60)
-    print(f"{'modo':28}{'CAGR':>8}{'Sharpe':>8}{'maxDD':>8}")
+    print(f"{'mode':28}{'CAGR':>8}{'Sharpe':>8}{'maxDD':>8}")
     series={}
-    for mode,lbl in [("A","A: caja en vol-parity (validado)"),("B","B: diversificadores de pie")]:
+    for mode,lbl in [("A","A: cash in the base"),("B","B: always-on diversifiers")]:
         r=build(P,R,mode=mode); series[mode]=r; c,sh,dd=metrics(r)
         print(f"{lbl:28}{c*100:>7.1f}%{sh:>8.2f}{dd*100:>7.1f}%")
-    print("\n"+"="*60+"\nEN CADA CRASH (maxDD dentro de la ventana)\n"+"="*60)
-    print(f"{'modo':8}"+"".join(f"{k:>16}" for k in CRASHES))
+    print("\n"+"="*60+"\nIN EACH CRASH (max drawdown inside the window)\n"+"="*60)
+    print(f"{'mode':8}"+"".join(f"{k:>16}" for k in CRASHES))
     for mode in ("A","B"):
         cells=[]
         for k,(a,b) in CRASHES.items():
@@ -82,7 +85,7 @@ def main():
             dd=((1+seg).cumprod()/(1+seg).cumprod().cummax()-1).min() if len(seg)>1 else float('nan')
             cells.append(f"{dd*100:>15.1f}%")
         print(f"{mode:8}"+"".join(cells))
-    print("\nObjetivo de B: maxDD MENOR en los crashes. Costo de B: menor CAGR. Ver el trade-off.")
+    print("\nGoal of B: a SMALLER max drawdown in the crashes. Cost of B: lower CAGR. Compare the trade-off.")
 
 if __name__=="__main__":
     main()

@@ -1,25 +1,27 @@
 """
-investor — BACKTEST v13: la idea de Oscar de "calidad castigada" (value contrarian), testeada
-honestamente ANTES de ponerle un dólar.
+Backtest v13: "beaten-down quality" (contrarian value), tested before risking any money.
 
-REGLAS PRE-REGISTRADAS (escritas antes de mirar resultados — 02-jul-2026):
-  Universo: S&P 500 point-in-time (los 681 con precios de v10).
-  SÓLIDA  = EPS TTM > 0 · EPS TTM hace 3 años > 0 · crecimiento EPS 3y ≥ 0 (con lag de
-            publicación de 90 días tras el cierre del trimestre — sin lookahead).
-  CASTIGADA = cierre ≤ 65% de su máximo de 252 días (−35% desde el pico).
-  Cartera: mensual, equiponderada entre TODAS las que califican (sin cherry-pick);
-           si ninguna califica → caja al 0%. Señal al cierre → ejecuta al open siguiente. 10 bps.
-  Variantes de atribución: solo-calidad (sin caída) · solo-castigada (sin calidad).
+PRE-REGISTERED RULES (written before looking at results, 2026-07-02):
+  Universe: point-in-time S&P 500 (the members with prices from v10).
+  QUALITY = TTM EPS > 0 · TTM EPS three years earlier > 0 · 3-year EPS growth >= 0 (with a
+            90-day publication lag after quarter end, so no look-ahead).
+  BEATEN  = close <= 65% of its 252-day high (-35% from the peak).
+  Portfolio: monthly, equal weight across ALL qualifying names (no cherry-picking); if none
+             qualify, 0% cash. Signal at the close, executed at the next open. 10 bps.
+  Attribution variants: quality only (no drop required) · beaten only (no quality filter).
 
-Fundamentales: SEC EDGAR xbrl/frames (EarningsPerShareDiluted trimestral, 2014Q1→2026Q1),
-CIK→ticker con company_tickers.json. ⚠️ Cobertura imperfecta (deslistados sin mapeo actual,
-fiscales no calendario) — se reporta; el sesgo resultante FAVORECE a la estrategia (solo puede
-comprar empresas que siguen vivas), así que un resultado negativo es robusto.
+Fundamentals: SEC EDGAR xbrl/frames (quarterly EarningsPerShareDiluted, 2014Q1 -> 2026Q1),
+CIK -> ticker via company_tickers.json. Coverage is imperfect (delisted companies without a
+current mapping, non-calendar fiscal years) and is reported. The resulting bias FAVORS the
+strategy (it can only buy companies that still exist), so a negative result is robust.
 
-⚠️ Pre-registro honesto: 2018-2026 es un período pésimo para value (régimen growth/IA). Un mal
-resultado no mata el estilo para siempre; un buen resultado sería señal fuerte.
+Pre-registered caveat: 2018-2026 was a poor period for value (growth/AI regime). A bad result
+does not kill the style forever; a good result would have been a strong signal.
 
-Uso:  python research/backtest_v13_value.py
+SEC requires a descriptive User-Agent with contact details for API access: set SEC_USER_AGENT
+(e.g. "your-name your@email.com") before the first run. Cached files in data_fund/ are reused.
+
+Usage:  python research/backtest_v13_value.py
 """
 import json, os, sys, time
 import numpy as np, pandas as pd
@@ -29,22 +31,28 @@ try: sys.stdout.reconfigure(encoding="utf-8")
 except Exception: pass
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "engine"))
 import pit_universe as PU
+from _env import load_env
+load_env()
 
 FUND = os.path.join(HERE, "data_fund")
 os.makedirs(FUND, exist_ok=True)
-UA = {"User-Agent": "oscar@pairus.ai investor-research (analisis personal)"}
+SEC_USER_AGENT = os.environ.get("SEC_USER_AGENT", "")
 COST = 10 / 1e4
-DIP = 0.65            # cierre <= 65% del máximo 252d
-LAG_DAYS = 90         # el EPS del trimestre se conoce ~90 días después del cierre del trimestre
+DIP = 0.65            # close <= 65% of the 252-day high
+LAG_DAYS = 90         # a quarter's EPS is assumed known ~90 days after quarter end
 
 
 def _get_json(url, cache_name):
+    """GET a SEC JSON file, cached in data_fund/. Returns None on HTTP errors."""
     path = os.path.join(FUND, cache_name)
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
             return json.load(f)
-    r = requests.get(url, headers=UA, timeout=30)
+    if not SEC_USER_AGENT:
+        raise SystemExit("SEC_USER_AGENT is not set; SEC requires a User-Agent with contact details.")
+    r = requests.get(url, headers={"User-Agent": SEC_USER_AGENT}, timeout=30)
     if r.status_code != 200:
         return None
     j = r.json()
@@ -55,7 +63,8 @@ def _get_json(url, cache_name):
 
 
 def load_eps_ttm():
-    """DataFrame trimestral: fecha_disponible × ticker → EPS TTM (suma 4 trimestres, lag 90d)."""
+    """Quarterly frames of TTM EPS and TTM EPS three years earlier, indexed by availability date
+    (quarter end + LAG_DAYS) x ticker."""
     cmap = _get_json("https://www.sec.gov/files/company_tickers.json", "company_tickers.json")
     cik2tick = {}
     for v in cmap.values():
@@ -77,8 +86,8 @@ def load_eps_ttm():
     df["end"] = pd.to_datetime(df["end"])
     df = df.drop_duplicates(["ticker", "end"]).sort_values("end")
     panel = df.pivot(index="end", columns="ticker", values="eps")
-    # TTM POR EMPRESA sobre su propia serie de trimestres (el panel es disperso: cada empresa
-    # cierra trimestre en fechas distintas — un rolling directo sobre el pivot rompe con los NaN)
+    # TTM PER COMPANY over its own quarter series: the panel is sparse (companies close quarters
+    # on different dates), so a rolling sum directly over the pivot breaks on the NaNs
     ttm_cols, ttm3_cols = {}, {}
     for t in panel.columns:
         s = panel[t].dropna()
@@ -86,16 +95,16 @@ def load_eps_ttm():
             continue
         ts = s.rolling(4).sum()
         ttm_cols[t] = ts
-        ttm3_cols[t] = ts.shift(12)                           # 12 trimestres = 3 años atrás
+        ttm3_cols[t] = ts.shift(12)                           # 12 quarters = 3 years back
     ttm = pd.DataFrame(ttm_cols)
     ttm3 = pd.DataFrame(ttm3_cols)
-    ttm.index = ttm.index + pd.Timedelta(days=LAG_DAYS)       # disponible 90d después
+    ttm.index = ttm.index + pd.Timedelta(days=LAG_DAYS)       # available 90 days later
     ttm3.index = ttm3.index + pd.Timedelta(days=LAG_DAYS)
     return ttm, ttm3
 
 
 def build_masks(C, ttm, ttm3):
-    """(quality_bool, dip_bool) diarios, alineados al panel de precios C (sin lookahead)."""
+    """(quality, dip) daily boolean frames aligned to the price panel C (no look-ahead)."""
     def daily(df):
         d = df.reindex(columns=C.columns)
         return d.reindex(d.index.union(C.index)).ffill().reindex(C.index)
@@ -106,6 +115,8 @@ def build_masks(C, ttm, ttm3):
 
 
 def run_screen(O, C, M, quality, dip, use_q=True, use_d=True, start="2018-10-01"):
+    """Monthly equal-weight screen over point-in-time members.
+    Returns (equity curve, (average, max) number of names held)."""
     dates = C.index
     i0 = dates.searchsorted(pd.Timestamp(start))
     month_end = set(pd.Series(dates).groupby([dates.year, dates.month]).apply(lambda s: s.iloc[-1]))
@@ -153,6 +164,7 @@ def run_screen(O, C, M, quality, dip, use_q=True, use_d=True, start="2018-10-01"
 
 
 def metrics(eq):
+    """(CAGR, maxDD, Sharpe, Calmar) from an equity curve (calendar-day CAGR)."""
     eq = eq.dropna()
     yrs = (eq.index[-1] - eq.index[0]).days / 365.25
     cagr = (eq.iloc[-1] / eq.iloc[0]) ** (1 / yrs) - 1
@@ -164,40 +176,40 @@ def metrics(eq):
 
 def main():
     print("=" * 96)
-    print("v13 — 'CALIDAD CASTIGADA' (idea de Oscar) · fundamentales EDGAR point-in-time · 10bps")
+    print("v13 · 'BEATEN-DOWN QUALITY' · point-in-time EDGAR fundamentals · 10bps")
     print("=" * 96)
     O, H, L, C = PU.load_ohlc(verbose=True)
     M = PU.Membership()
-    print("bajando/cargando EPS trimestral EDGAR (frames 2014Q1-2026Q1)…")
+    print("loading quarterly EDGAR EPS (frames 2014Q1-2026Q1)...")
     ttm, ttm3 = load_eps_ttm()
     cov = len([t for t in C.columns if t in ttm.columns])
-    print(f"cobertura de fundamentales: {cov}/{C.shape[1]} tickers del universo PIT")
+    print(f"fundamentals coverage: {cov}/{C.shape[1]} tickers of the PIT universe")
     quality, dip = build_masks(C, ttm, ttm3)
 
-    variants = [("CALIDAD + CASTIGADA (la idea)", True, True),
-                ("solo CALIDAD (sin exigir caída)", True, False),
-                ("solo CASTIGADA (sin calidad)", False, True)]
+    variants = [("QUALITY + BEATEN (the idea)", True, True),
+                ("QUALITY only (no drop required)", True, False),
+                ("BEATEN only (no quality filter)", False, True)]
     res = {}
     for name, uq, ud in variants:
         eq, (n_avg, n_max) = run_screen(O, C, M, quality, dip, use_q=uq, use_d=ud)
         c, d, s, cal = metrics(eq)
         res[name] = eq
         print(f"{name:34s} CAGR {c*100:6.1f}% · maxDD {d*100:6.1f}% · Sharpe {s:4.2f} · "
-              f"Calmar {cal:5.2f} · nombres prom/máx {n_avg:.0f}/{n_max}")
+              f"Calmar {cal:5.2f} · names avg/max {n_avg:.0f}/{n_max}")
 
-    print("\nbenchmarks (mismos datos price-return Databento, misma ventana):")
+    print("\nbenchmarks (same Databento price-return data, same window):")
     for s in ("SPY", "QQQ"):
         px = pd.read_parquet(os.path.join(HERE, "data_db", f"{s}.parquet"))["close"]
         px = px[(px.index >= "2018-10-01")]
         c, d, sh, cal = metrics(px / px.iloc[0])
         print(f"{s+' B&H':34s} CAGR {c*100:6.1f}% · maxDD {d*100:6.1f}% · Sharpe {sh:4.2f} · Calmar {cal:5.2f}")
 
-    print("\nretornos por año de la idea vs SPY:")
-    eq = res["CALIDAD + CASTIGADA (la idea)"]
+    print("\nreturns by year of the idea vs SPY:")
+    eq = res["QUALITY + BEATEN (the idea)"]
     ya = eq.resample("YE").last() / eq.resample("YE").first() - 1
     spy = pd.read_parquet(os.path.join(HERE, "data_db", "SPY.parquet"))["close"]
     spy = spy[spy.index >= "2018-10-01"]; ys = spy.resample("YE").last() / spy.resample("YE").first() - 1
-    print("año  " + "".join(f"{t.year:>8}" for t in ya.index))
+    print("year " + "".join(f"{t.year:>8}" for t in ya.index))
     print("idea " + "".join(f"{v*100:7.1f}%" for v in ya))
     print("SPY  " + "".join(f"{ys.get(t, np.nan)*100:7.1f}%" for t in ya.index))
 

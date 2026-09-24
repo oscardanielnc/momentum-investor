@@ -1,12 +1,15 @@
 """
-investor — Descarga OHLC diario TOTAL-RETURN (adjustment=all: splits+dividendos) de un MENÚ
-pre-especificado de ETFs vía Alpaca Data API (feed IEX, gratis). Base del backtest v11.
+Download daily OHLC with adjustment=all (splits + dividends) for a pre-specified ETF menu from
+the Alpaca Data API (IEX feed, free).
 
-El menú se fija ANTES de mirar resultados (regla anti-hindsight): índices core US, los 11
-sectores SPDR completos, países/regiones principales completos, defensivos, factor y
-apalancados. NO se eligen "los que más rindieron".
+The menu is fixed BEFORE looking at results (anti-hindsight rule): core US indices, all 11
+SPDR sectors, the main countries/regions, defensives, factors and leveraged ETFs. It does NOT
+pick "the ones that did best".
 
-Caché parquet en research/data_etf/. Uso: python research/etf_fetch.py
+Note: backtest_v11_etf.py ended up loading its data from yfinance (research/data_etf_long/,
+history back to 1998), and no backtest reads this script's cache (research/data_etf/).
+
+Usage: python research/etf_fetch.py      (needs Alpaca keys)
 """
 import os, sys, time
 import pandas as pd, requests
@@ -24,12 +27,12 @@ START = "2015-01-01"
 
 MENU = {
     "core_us":    ["SPY", "QQQ", "DIA", "IWM", "MDY"],
-    "sectores11": ["XLK", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLU", "XLRE", "XLC"],
-    "industria":  ["SMH", "IGV", "XBI"],          # ⚠️ satélites con riesgo de hindsight (se flaggea)
-    "paises":     ["EFA", "EEM", "MCHI", "FXI", "KWEB", "ASHR", "EWJ", "EWY", "EWT", "INDA", "EWZ", "ILF"],
-    "defensivos": ["TLT", "IEF", "SHY", "GLD", "BIL"],
+    "sectors11":  ["XLK", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLU", "XLRE", "XLC"],
+    "industry":   ["SMH", "IGV", "XBI"],          # satellites with hindsight risk (flagged)
+    "countries":  ["EFA", "EEM", "MCHI", "FXI", "KWEB", "ASHR", "EWJ", "EWY", "EWT", "INDA", "EWZ", "ILF"],
+    "defensive":  ["TLT", "IEF", "SHY", "GLD", "BIL"],
     "factor":     ["MTUM", "SPMO", "VUG", "IWY", "QUAL", "USMV"],
-    "apalancado": ["QLD", "SSO", "TQQQ"],
+    "leveraged":  ["QLD", "SSO", "TQQQ"],
 }
 ALL = sorted({s for v in MENU.values() for s in v})
 
@@ -39,6 +42,7 @@ def _env(name):
 
 
 def fetch(sym):
+    """Daily OHLCV frame for `sym` (from the cache when present), or None."""
     path = os.path.join(CACHE, f"{sym}.parquet")
     if os.path.exists(path):
         return pd.read_parquet(path)
@@ -51,7 +55,7 @@ def fetch(sym):
             p["page_token"] = tok
         r = requests.get("https://data.alpaca.markets/v2/stocks/bars", params=p, headers=hdr, timeout=30)
         if r.status_code != 200:
-            print(f"  ❌ {sym}: HTTP {r.status_code} {r.text[:80]}")
+            print(f"  FAIL {sym}: HTTP {r.status_code} {r.text[:80]}")
             return None
         j = r.json()
         rows.extend((j.get("bars") or {}).get(sym, []))
@@ -60,7 +64,7 @@ def fetch(sym):
             break
         time.sleep(0.05)
     if not rows:
-        print(f"  ❌ {sym}: sin barras")
+        print(f"  FAIL {sym}: no bars")
         return None
     df = pd.DataFrame([{"date": b["t"][:10], "open": b["o"], "high": b["h"],
                         "low": b["l"], "close": b["c"], "volume": b["v"]} for b in rows])
@@ -68,7 +72,7 @@ def fetch(sym):
     df = df.set_index("date").sort_index()
     df = df[~df.index.duplicated(keep="last")]
     df.to_parquet(path)
-    print(f"  ✅ {sym:5} {len(df):5} barras · {df.index[0].date()}→{df.index[-1].date()}")
+    print(f"  OK   {sym:5} {len(df):5} bars · {df.index[0].date()}->{df.index[-1].date()}")
     return df
 
 
@@ -82,7 +86,7 @@ def load_panel(field="close"):
 
 
 if __name__ == "__main__":
-    print(f"DESCARGA ETFs Alpaca (total return) · {len(ALL)} símbolos · desde {START}")
+    print(f"Alpaca ETF download (total return) · {len(ALL)} symbols · since {START}")
     P = load_panel()
-    print(f"panel: {P.shape[1]} ETFs · {P.index[0].date()}→{P.index[-1].date()}")
-    print("faltan:", sorted(set(ALL) - set(P.columns)) or "ninguno")
+    print(f"panel: {P.shape[1]} ETFs · {P.index[0].date()}->{P.index[-1].date()}")
+    print("missing:", sorted(set(ALL) - set(P.columns)) or "none")

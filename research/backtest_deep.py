@@ -1,16 +1,20 @@
 """
-investor — Backtest PROFUNDO 2018+ (Databento) a través de 3 crashes reales.
-Compara: ¿el tilt debe ser el ETF (SMH) o una CANASTA top-N de semis individuales?
-+ valida que el freno escalonado respeta el techo −30%.
+Backtest v1: 2018+ (Databento) through three real drawdowns.
 
-Estrategias:
-  DYN-ETF    : tilt = SMH (ETF), tilt dinámico (escala con momentum/vol) + freno DD + vol-parity base.
-  DYN-CANASTA: tilt = top-3 semis por momentum ajustado-riesgo (rota), mismo sizing dinámico.
-  STATIC 65/35: base vol-parity 65% + SMH 35% fijo.
-  Benchmarks : QQQ, SPY, 60/40.
+Question: should the growth tilt be the semiconductor ETF (SMH) or a rotating basket of the
+top individual semiconductor stocks? Also checks that the stepped drawdown brake respects a
+-30% cap.
 
-Reporta métricas globales + retorno/maxDD en cada crash (2018-Q4, COVID-2020, bear-2022).
-Uso: python research/backtest_deep.py
+Strategies:
+  DYN-ETF     : tilt = SMH, sized by its risk-adjusted momentum + drawdown brake, rest in an
+                inverse-volatility base of diversifiers.
+  DYN-BASKET  : tilt = top-3 semis by risk-adjusted momentum (rotating), same sizing.
+  STATIC 65/35: inverse-volatility base 65% + SMH 35%.
+  Benchmarks  : QQQ, 60/40 (SPY/TLT).
+
+Reports global metrics plus return and max drawdown inside each crash window (2018-Q4,
+COVID-2020, bear 2022). Uses the survivorship-biased hand-picked universe from db_fetch.py.
+Usage: python research/backtest_deep.py
 """
 import sys
 import numpy as np, pandas as pd
@@ -18,7 +22,7 @@ from db_fetch import load_panel, STOCKS
 try: sys.stdout.reconfigure(encoding="utf-8")
 except Exception: pass
 
-BASE = ["XLV","XLP","XLU","XLE","GLD","DBC","TLT","SHY","EEM","EFA","QQQ"]  # diversificadores + núcleo
+BASE = ["XLV","XLP","XLU","XLE","GLD","DBC","TLT","SHY","EEM","EFA","QQQ"]  # diversifiers + core
 CASH = "SHY"
 CRASHES = {
     "2018-Q4":  ("2018-09-20", "2018-12-26"),
@@ -35,12 +39,12 @@ def metrics(r):
     return cagr, vol, sh, dd
 
 def main():
-    print("Cargando panel (caché Databento)…")
+    print("Loading panel (Databento cache)...")
     P = load_panel()
     R = P.pct_change()
     base = [s for s in BASE if s in P]
     stocks = [s for s in STOCKS if s in P]
-    print(f"Base: {base}\nSemis canasta: {stocks}\nSMH presente: {'SMH' in P}")
+    print(f"Base: {base}\nSemis basket: {stocks}\nSMH present: {'SMH' in P}")
     rebal = P.resample("ME").last().index
     idx_rebal = set(rebal)
 
@@ -101,7 +105,7 @@ def main():
     strat = {
         "STATIC 65/35": run(w_static),
         "DYN-ETF (SMH)": run(w_dyn_etf),
-        "DYN-CANASTA":   run(w_dyn_basket),
+        "DYN-BASKET":    run(w_dyn_basket),
     }
     if "QQQ" in R: strat["BENCH QQQ"] = R["QQQ"]
     if "SPY" in R and "TLT" in R: strat["BENCH 60/40"] = 0.6*R["SPY"]+0.4*R["TLT"]
@@ -109,26 +113,26 @@ def main():
     print("\n" + "="*72)
     print("GLOBAL 2018+")
     print("="*72)
-    print(f"{'estrategia':16}{'CAGR':>8}{'vol':>7}{'Sharpe':>8}{'maxDD':>8}{'Calmar':>8}")
+    print(f"{'strategy':16}{'CAGR':>8}{'vol':>7}{'Sharpe':>8}{'maxDD':>8}{'Calmar':>8}")
     print("-"*72)
     for n, r in strat.items():
         c,v,sh,dd = metrics(r); cal = c/abs(dd) if dd<0 else float('nan')
         print(f"{n:16}{c*100:>7.1f}%{v*100:>6.1f}%{sh:>8.2f}{dd*100:>7.1f}%{cal:>8.2f}")
 
     print("\n" + "="*72)
-    print("EN CADA CRASH (retorno acumulado · maxDD dentro de la ventana)")
+    print("IN EACH CRASH (cumulative return · max drawdown inside the window)")
     print("="*72)
-    print(f"{'estrategia':16}" + "".join(f"{k:>20}" for k in CRASHES))
+    print(f"{'strategy':16}" + "".join(f"{k:>20}" for k in CRASHES))
     for n, r in strat.items():
         cells = []
         for k,(a,b) in CRASHES.items():
             seg = r.loc[a:b].dropna()
-            if len(seg)<2: cells.append(f"{'s/d':>20}"); continue
+            if len(seg)<2: cells.append(f"{'n/a':>20}"); continue
             cum = (1+seg).prod()-1
             dd = ((1+seg).cumprod()/(1+seg).cumprod().cummax()-1).min()
             cells.append(f"{cum*100:>9.1f}% dd{dd*100:>6.1f}%")
         print(f"{n:16}" + "".join(cells))
-    print("\nObjetivo: que las DYN tengan maxDD mucho menor que QQQ en cada crash, sin matar el CAGR global.")
+    print("\nGoal: DYN strategies with a much smaller max drawdown than QQQ in each crash, without killing the global CAGR.")
 
 if __name__ == "__main__":
     main()

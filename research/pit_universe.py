@@ -1,71 +1,74 @@
 """
-investor — Universo POINT-IN-TIME del S&P 500 (helpers para backtest_v10_pit).
+Point-in-time S&P 500 universe (helpers for backtest_v10_pit and backtest_v13_value).
 
-Provee:
-  - load_ohlc()      → paneles O/H/L/C (fechas × tickers) ENMASCARADOS por ventana de membresía
-                       (con buffer de 200d previos para el lookback de momentum). La máscara evita
-                       el veneno de los tickers REUSADOS por otra empresa tras un delisting.
-  - members_asof(d)  → set de tickers miembros del índice en la fecha d (point-in-time).
-  - SECTOR           → mapeo ticker → sector (Wikipedia GICS actual + curado manual de deslistados;
-                       semis separado de tech, como en la estrategia live).
+Provides:
+  - load_ohlc()           O/H/L/C panels (dates x tickers) MASKED to each ticker's membership
+                          windows, plus a 200-day buffer before inclusion for the momentum
+                          lookback. The mask prevents a ticker that was later reused by a
+                          different company from leaking that company's prices into the test.
+  - Membership().asof(d)  frozenset of index members on date d (point-in-time).
+  - SECTOR                ticker -> sector (current GICS sectors from Wikipedia plus a manual
+                          mapping for delisted or renamed tickers; semiconductors are split from
+                          tech, as in the live strategy).
 
-Fuente membresía: fja05680/sp500 (histórico 1996+, incluye deslistados). Precios: pit_fetch.py.
+Membership source: fja05680/sp500 (history since 1996, delisted members included).
+Prices: pit_fetch.py.
 """
 import json, os
 import numpy as np, pandas as pd
 
 HERE  = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.join(HERE, "data_pit")
-BUFFER_DAYS = 200          # días de historia previos a la inclusión permitidos (para el lookback)
+BUFFER_DAYS = 200          # days of history allowed before inclusion (for the lookback)
 
-# ── Sectores: GICS actual (Wikipedia) + curado manual de deslistados/renombrados ─────────────
+# ── Sectors: current GICS (Wikipedia) + manual mapping for delisted/renamed tickers ──────────
 with open(os.path.join(CACHE, "sectors_wiki.json"), encoding="utf-8") as f:
     SECTOR = json.load(f)
 
 SECTOR_DELISTED = {
- "AAL":"industrial","AAP":"consumo_disc","ABC":"salud","ABMD":"salud","ADS":"finanzas",
- "AET":"salud","AGN":"salud","AIV":"realestate","ALK":"industrial","ALXN":"salud",
- "AMG":"finanzas","AMTM":"industrial","ANDV":"energia","ANSS":"tech","ANTM":"salud",
- "APC":"energia","ARNC":"industrial","ATVI":"comm","AYI":"industrial","BBT":"finanzas",
- "BBWI":"consumo_disc","BHF":"finanzas","BHGE":"energia","BIO":"salud","BK":"finanzas",
- "BLL":"materiales","BWA":"consumo_disc","CA":"tech","CAG":"consumo_bas","CBS":"comm",
- "CDAY":"tech","CE":"materiales","CELG":"salud","CERN":"salud","CMA":"finanzas",
- "COG":"energia","COL":"industrial","COTY":"consumo_bas","CPB":"consumo_bas",
- "CPRI":"consumo_disc","CTL":"comm","CTLT":"salud","CTRA":"energia","CTXS":"tech",
- "CXO":"energia","CZR":"consumo_disc","DAY":"tech","DFS":"finanzas","DISCA":"comm",
- "DISCK":"comm","DISH":"comm","DRE":"realestate","DWDP":"materiales","DXC":"tech",
- "EMN":"materiales","ENPH":"tech","EPAM":"tech","ESRX":"salud","ETFC":"finanzas",
- "ETSY":"consumo_disc","EVHC":"salud","FB":"comm","FBHS":"industrial","FI":"finanzas",
- "FL":"consumo_disc","FLIR":"tech","FLR":"industrial","FLS":"industrial","FLT":"finanzas",
- "FMC":"materiales","FRC":"finanzas","FTI":"energia","GGP":"realestate","GPS":"consumo_disc",
- "GT":"consumo_disc","HBI":"consumo_disc","HCP":"realestate","HES":"energia","HFC":"energia",
- "HOG":"consumo_disc","HOLX":"salud","HP":"energia","HRB":"consumo_disc","HRS":"industrial",
- "ILMN":"salud","INFO":"industrial","IPG":"comm","IPGP":"tech","JEC":"industrial",
- "JEF":"finanzas","JNPR":"tech","JWN":"consumo_disc","K":"consumo_bas","KMX":"consumo_disc",
- "KORS":"consumo_disc","KSS":"consumo_disc","KSU":"industrial","LB":"consumo_disc",
- "LEG":"consumo_disc","LKQ":"consumo_disc","LLL":"industrial","LNC":"finanzas","LUMN":"comm",
- "LW":"consumo_bas","M":"consumo_disc","MAC":"realestate","MAT":"consumo_disc",
- "MHK":"consumo_disc","MKTX":"finanzas","MMC":"finanzas","MOH":"salud","MON":"materiales",
- "MRO":"energia","MTCH":"comm","MXIM":"semis","MYL":"salud","NAVI":"finanzas","NBL":"energia",
- "NFX":"energia","NKTR":"salud","NLOK":"tech","NLSN":"industrial","NOV":"energia",
- "NWL":"consumo_disc","OGN":"salud","PARA":"comm","PAYC":"tech","PBCT":"finanzas",
- "PEAK":"realestate","PENN":"consumo_disc","PKI":"salud","POOL":"consumo_disc","PRGO":"salud",
- "PVH":"consumo_disc","PX":"materiales","PXD":"energia","QRVO":"semis","RE":"finanzas",
- "RHI":"industrial","RHT":"tech","RRC":"energia","RTN":"industrial","SATS":"comm",
- "SBNY":"finanzas","SCG":"utilities","SEDG":"tech","SEE":"materiales","SIVB":"finanzas",
- "SLG":"realestate","SOLS":"materiales","SRCL":"industrial","STI":"finanzas","SYMC":"tech",
- "TFX":"salud","TIF":"consumo_disc","TMK":"finanzas","TRIP":"comm","TSS":"finanzas",
- "TWTR":"comm","TWX":"comm","UA":"consumo_disc","UAA":"consumo_disc","UNM":"finanzas",
- "UTX":"industrial","VAR":"salud","VFC":"consumo_disc","VIAB":"comm","VIAC":"comm",
- "VNO":"realestate","VNT":"tech","WBA":"consumo_bas","WCG":"salud","WHR":"consumo_disc",
- "WLTW":"finanzas","WRK":"materiales","WU":"finanzas","WYND":"consumo_disc","XEC":"energia",
- "XL":"finanzas","XLNX":"semis","XRAY":"salud","XRX":"tech","ZION":"finanzas",
+ "AAL":"industrials","AAP":"consumer_disc","ABC":"health","ABMD":"health","ADS":"financials",
+ "AET":"health","AGN":"health","AIV":"real_estate","ALK":"industrials","ALXN":"health",
+ "AMG":"financials","AMTM":"industrials","ANDV":"energy","ANSS":"tech","ANTM":"health",
+ "APC":"energy","ARNC":"industrials","ATVI":"comm","AYI":"industrials","BBT":"financials",
+ "BBWI":"consumer_disc","BHF":"financials","BHGE":"energy","BIO":"health","BK":"financials",
+ "BLL":"materials","BWA":"consumer_disc","CA":"tech","CAG":"consumer_staples","CBS":"comm",
+ "CDAY":"tech","CE":"materials","CELG":"health","CERN":"health","CMA":"financials",
+ "COG":"energy","COL":"industrials","COTY":"consumer_staples","CPB":"consumer_staples",
+ "CPRI":"consumer_disc","CTL":"comm","CTLT":"health","CTRA":"energy","CTXS":"tech",
+ "CXO":"energy","CZR":"consumer_disc","DAY":"tech","DFS":"financials","DISCA":"comm",
+ "DISCK":"comm","DISH":"comm","DRE":"real_estate","DWDP":"materials","DXC":"tech",
+ "EMN":"materials","ENPH":"tech","EPAM":"tech","ESRX":"health","ETFC":"financials",
+ "ETSY":"consumer_disc","EVHC":"health","FB":"comm","FBHS":"industrials","FI":"financials",
+ "FL":"consumer_disc","FLIR":"tech","FLR":"industrials","FLS":"industrials","FLT":"financials",
+ "FMC":"materials","FRC":"financials","FTI":"energy","GGP":"real_estate","GPS":"consumer_disc",
+ "GT":"consumer_disc","HBI":"consumer_disc","HCP":"real_estate","HES":"energy","HFC":"energy",
+ "HOG":"consumer_disc","HOLX":"health","HP":"energy","HRB":"consumer_disc","HRS":"industrials",
+ "ILMN":"health","INFO":"industrials","IPG":"comm","IPGP":"tech","JEC":"industrials",
+ "JEF":"financials","JNPR":"tech","JWN":"consumer_disc","K":"consumer_staples","KMX":"consumer_disc",
+ "KORS":"consumer_disc","KSS":"consumer_disc","KSU":"industrials","LB":"consumer_disc",
+ "LEG":"consumer_disc","LKQ":"consumer_disc","LLL":"industrials","LNC":"financials","LUMN":"comm",
+ "LW":"consumer_staples","M":"consumer_disc","MAC":"real_estate","MAT":"consumer_disc",
+ "MHK":"consumer_disc","MKTX":"financials","MMC":"financials","MOH":"health","MON":"materials",
+ "MRO":"energy","MTCH":"comm","MXIM":"semis","MYL":"health","NAVI":"financials","NBL":"energy",
+ "NFX":"energy","NKTR":"health","NLOK":"tech","NLSN":"industrials","NOV":"energy",
+ "NWL":"consumer_disc","OGN":"health","PARA":"comm","PAYC":"tech","PBCT":"financials",
+ "PEAK":"real_estate","PENN":"consumer_disc","PKI":"health","POOL":"consumer_disc","PRGO":"health",
+ "PVH":"consumer_disc","PX":"materials","PXD":"energy","QRVO":"semis","RE":"financials",
+ "RHI":"industrials","RHT":"tech","RRC":"energy","RTN":"industrials","SATS":"comm",
+ "SBNY":"financials","SCG":"utilities","SEDG":"tech","SEE":"materials","SIVB":"financials",
+ "SLG":"real_estate","SOLS":"materials","SRCL":"industrials","STI":"financials","SYMC":"tech",
+ "TFX":"health","TIF":"consumer_disc","TMK":"financials","TRIP":"comm","TSS":"financials",
+ "TWTR":"comm","TWX":"comm","UA":"consumer_disc","UAA":"consumer_disc","UNM":"financials",
+ "UTX":"industrials","VAR":"health","VFC":"consumer_disc","VIAB":"comm","VIAC":"comm",
+ "VNO":"real_estate","VNT":"tech","WBA":"consumer_staples","WCG":"health","WHR":"consumer_disc",
+ "WLTW":"financials","WRK":"materials","WU":"financials","WYND":"consumer_disc","XEC":"energy",
+ "XL":"financials","XLNX":"semis","XRAY":"health","XRX":"tech","ZION":"financials",
 }
 SECTOR.update({k: v for k, v in SECTOR_DELISTED.items() if k not in SECTOR})
 
 
 def _membership_windows():
-    """{ticker: [(start,end), ...]} desde sp500_ticker_start_end.csv (puede haber varias ventanas)."""
+    """{ticker: [(start, end), ...]} from sp500_start_end.csv (a ticker can have several windows)."""
     se = pd.read_csv(os.path.join(CACHE, "sp500_start_end.csv"), parse_dates=["start_date", "end_date"])
     se["end_date"] = se["end_date"].fillna(pd.Timestamp("2099-01-01"))
     win = {}
@@ -75,7 +78,7 @@ def _membership_windows():
 
 
 def load_ohlc(verbose=True):
-    """Paneles (O,H,L,C) fechas×tickers, enmascarados a las ventanas de membresía + buffer."""
+    """(O, H, L, C) date x ticker panels, masked to membership windows plus the buffer."""
     win = _membership_windows()
     frames = {"open": {}, "high": {}, "low": {}, "close": {}}
     n = 0
@@ -98,12 +101,12 @@ def load_ohlc(verbose=True):
     out = {col: pd.DataFrame(d).sort_index() for col, d in frames.items()}
     if verbose:
         C = out["close"]
-        print(f"panel PIT: {C.shape[1]} tickers · {C.index[0].date()}→{C.index[-1].date()} · {len(C)} días")
+        print(f"PIT panel: {C.shape[1]} tickers · {C.index[0].date()}->{C.index[-1].date()} · {len(C)} days")
     return out["open"], out["high"], out["low"], out["close"]
 
 
 class Membership:
-    """members_asof(d) → frozenset de tickers miembros en la fecha d (point-in-time)."""
+    """Index membership by date: asof(d) returns the frozenset of members on date d."""
     def __init__(self):
         rows = pd.read_csv(os.path.join(CACHE, "sp500_hist.csv"), parse_dates=["date"])
         rows = rows.sort_values("date")

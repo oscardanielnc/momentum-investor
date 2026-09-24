@@ -1,9 +1,13 @@
 """
-investor — Backtest v7: TOPE POR SECTOR. ¿Cuánto cuesta forzar diversificación?
-Top-5 momentum con tope de N posiciones por sector (2=40%, 3=60%, 4=80%, 5=sin tope).
-Config: lb90, trailing 20%, costos ON, 2018+. Mide retorno/riesgo + concentración real
-(peso del sector dominante, % del tiempo en que 1 sector ocupa ≥80% o 100%).
-Uso: python research/backtest_v7_sectorcap.py
+Backtest v7: per-sector cap. What does forced diversification cost?
+
+Top-5 momentum with at most N positions per sector (2=40%, 3=60%, 4=80%, 5=no cap).
+Config: lookback 90, 20% trailing stop, with costs, 2018+. Measures return/risk plus actual
+concentration (average weight of the dominant sector, share of rebalances where one sector
+holds 80% or more).
+
+Uses the survivorship-biased 36-stock universe (see backtest_v10_pit.py).
+Usage: python research/backtest_v7_sectorcap.py
 """
 import sys
 import numpy as np, pandas as pd
@@ -16,6 +20,7 @@ COST = 10/1e4
 CRASHES = {"2018-Q4":("2018-09-20","2018-12-26"),"COVID-20":("2020-02-19","2020-03-23"),"Bear-22":("2022-01-03","2022-10-12")}
 
 def select_capped(P, R, day, topn, cap, lb):
+    """Top-N by momentum with at most `cap` names per sector."""
     ranked = sorted([s for s in UNIV if s in P], key=lambda s: rmom(P,R,s,day,lb), reverse=True)
     chosen, sc = [], {}
     for s in ranked:
@@ -27,6 +32,7 @@ def select_capped(P, R, day, topn, cap, lb):
     return chosen
 
 def run(P, R, topn=5, trail=0.20, lb=90, cap=5):
+    """Returns (daily returns, avg sectors, avg dominant-sector weight, share of rebalances >= 80% one sector)."""
     rebset=set(P.resample("ME").last().index); days=R.index
     w={}; peaks={}; E=1.0; peak=1.0; rets={}; secs=[]; maxsec=[]
     for i,day in enumerate(days):
@@ -55,25 +61,25 @@ def run(P, R, topn=5, trail=0.20, lb=90, cap=5):
     return pd.Series(rets), np.mean(secs), np.mean(maxsec), np.mean([1 for m in maxsec if m>=0.8])/max(len(maxsec),1) if maxsec else 0
 
 def main():
-    print("Cargando panel…"); P=load_panel(); R=P.pct_change()
+    print("Loading panel..."); P=load_panel(); R=P.pct_change()
     print("\n"+"="*84)
-    print("TOPE POR SECTOR (top-5, lb90, trailing 20%, costos ON) · 2018+")
+    print("SECTOR CAP (top-5, lb90, 20% trailing, with costs) · 2018+")
     print("="*84)
-    print(f"{'tope/sector':14}{'CAGR':>8}{'Sharpe':>8}{'maxDD':>8}{'Calmar':>8}{'sectores':>9}{'pesoMax':>9}{'%≥80%1sec':>11}")
+    print(f"{'cap/sector':14}{'CAGR':>8}{'Sharpe':>8}{'maxDD':>8}{'Calmar':>8}{'sectors':>9}{'maxWt':>9}{'%>=80%1sec':>11}")
     out={}
-    for cap,lbl in [(2,"máx2 (40%)"),(3,"máx3 (60%)"),(4,"máx4 (80%)"),(5,"sin tope (100%)")]:
+    for cap,lbl in [(2,"max2 (40%)"),(3,"max3 (60%)"),(4,"max4 (80%)"),(5,"no cap (100%)")]:
         r,sec,mx,conc=run(P,R,cap=cap); out[cap]=r; c,sh,dd=metrics(r); cal=c/abs(dd) if dd<0 else float('nan')
         print(f"{lbl:14}{c*100:>7.1f}%{sh:>8.2f}{dd*100:>7.1f}%{cal:>8.2f}{sec:>9.1f}{mx*100:>8.0f}%{conc*100:>10.0f}%")
-    print("\n"+"="*84+"\nEN CADA CRASH (maxDD en la ventana)\n"+"="*84)
-    print(f"{'tope/sector':14}"+"".join(f"{k:>14}" for k in CRASHES))
-    for cap,lbl in [(2,"máx2 (40%)"),(3,"máx3 (60%)"),(4,"máx4 (80%)"),(5,"sin tope")]:
+    print("\n"+"="*84+"\nIN EACH CRASH (max drawdown inside the window)\n"+"="*84)
+    print(f"{'cap/sector':14}"+"".join(f"{k:>14}" for k in CRASHES))
+    for cap,lbl in [(2,"max2 (40%)"),(3,"max3 (60%)"),(4,"max4 (80%)"),(5,"no cap")]:
         cells=[]
         for k,(a,b) in CRASHES.items():
             seg=out[cap].loc[a:b].dropna()
             dd=((1+seg).cumprod()/(1+seg).cumprod().cummax()-1).min() if len(seg)>1 else float('nan')
             cells.append(f"{dd*100:>13.1f}%")
         print(f"{lbl:14}"+"".join(cells))
-    print("\npesoMax = peso promedio del sector dominante · %≥80% = fracción del tiempo con 1 sector ≥80%")
+    print("\nmaxWt = average weight of the dominant sector · %>=80% = share of rebalances with one sector >= 80%")
 
 if __name__=="__main__":
     main()

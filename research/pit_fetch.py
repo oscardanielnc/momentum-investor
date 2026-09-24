@@ -1,21 +1,23 @@
 """
-investor — Descarga POINT-IN-TIME: OHLCV diario de TODOS los miembros históricos del S&P 500
-(2018-05 → 2026-06), incluidos los que luego salieron/quebraron/fueron adquiridos.
+Point-in-time download: daily OHLCV for EVERY historical S&P 500 member (2018-05 to 2026-06),
+including companies that were later removed, went bankrupt or were acquired.
 
-Es la base del re-backtest honesto: el universo de cada fecha es el que un inversor habría
-conocido ESE día (membresía S&P 500 point-in-time, fja05680/sp500), no los "líderes de 2026".
+This is the base of the honest re-test: the universe on each date is the one an investor
+could have known on that date (point-in-time S&P 500 membership from fja05680/sp500), not
+"the leaders of 2026".
 
-- Fuente precios: Databento ohlcv-1d (XNAS.ITCH → XNYS.PILLAR → ARCX.PILLAR), raw_symbol.
-  Los cambios de ticker se resuelven solos: la membresía usa el ticker vigente en cada fecha
-  (FB hasta 2022, META después) y Databento raw_symbol devuelve datos solo mientras ese
-  ticker existió → el panel por-ticker empalma naturalmente.
-- Se guarda OHLC completo (el backtest v10 simula el trailing stop con high/low INTRADÍA,
-  como la orden nativa de Alpaca — el viejo backtest close-only no era fiel al robot).
-- Ajuste de splits sobre el CLOSE (mismo heurístico auditado de db_fetch) aplicado a O/H/L/C;
-  se guarda `factor` para poder reconstruir volumen/dólar-volumen crudos.
-- Caché parquet por símbolo en research/data_pit/ (no re-descarga). Costo verificado: ~$3.8.
+- Prices: Databento ohlcv-1d (XNAS.ITCH -> XNYS.PILLAR -> ARCX.PILLAR), raw_symbol.
+  Ticker changes resolve themselves: membership uses the ticker in force on each date (FB
+  until 2022, META afterwards) and Databento raw_symbol only returns data while that ticker
+  existed, so the per-ticker panel stitches naturally.
+- Full OHLC is stored: backtest v10 simulates the trailing stop with the INTRADAY high/low,
+  like Alpaca's native order (the older close-only backtests were not faithful to the robot).
+- Split adjustment on the close (same heuristic as db_fetch.py) is applied to O/H/L/C; the
+  `factor` column is kept so raw volume and dollar volume can be reconstructed.
+- Parquet cache per symbol in research/data_pit/ (never downloaded twice). The original
+  download cost about $3.8 of Databento credit.
 
-Uso:  python research/pit_fetch.py
+Usage:  python research/pit_fetch.py      (needs DATABENTO_API_KEY)
 """
 import os, sys
 import databento as db
@@ -35,6 +37,7 @@ DATASETS = ["XNAS.ITCH", "XNYS.PILLAR", "ARCX.PILLAR"]
 
 
 def needed_tickers():
+    """Every ticker that was an index member at some point inside [START, END]."""
     se = pd.read_csv(os.path.join(CACHE, "sp500_start_end.csv"))
     se["end_date"] = se["end_date"].fillna("2099-01-01")
     need = se[(se["end_date"] >= START) & (se["start_date"] <= END)]
@@ -42,8 +45,8 @@ def needed_tickers():
 
 
 def _adjust_splits_ohlc(df, sym):
-    """Detecta splits por salto overnight del close (>±45%, ratio redondo) y re-escala el
-    PASADO de O/H/L/C. Devuelve (df_ajustado, n_ajustes). `factor` queda como columna."""
+    """Detect splits from overnight close jumps (beyond +/-45%, round ratio) and rescale the
+    PAST of O/H/L/C. Returns (adjusted_df, n_adjustments); `factor` is added as a column."""
     ratios = np.array([2, 3, 4, 5, 6, 7, 8, 10, 20])
     c = df["close"]
     rel = c / c.shift(1)
@@ -69,10 +72,11 @@ def _adjust_splits_ohlc(df, sym):
 
 
 def fetch_all():
+    """Download every missing ticker, trying each venue in turn, and cache it as parquet."""
     tickers = needed_tickers()
     have = {f[:-8] for f in os.listdir(CACHE) if f.endswith(".parquet")}
     todo = [t for t in tickers if t not in have]
-    print(f"tickers: {len(tickers)} · en caché: {len(tickers)-len(todo)} · a descargar: {len(todo)}")
+    print(f"tickers: {len(tickers)} · cached: {len(tickers)-len(todo)} · to download: {len(todo)}")
     if not todo:
         return
     client = db.Historical(os.environ["DATABENTO_API_KEY"])
@@ -80,13 +84,13 @@ def fetch_all():
     for ds in DATASETS:
         if not pending:
             break
-        print(f"→ {ds}: pidiendo {len(pending)} símbolos…")
+        print(f"-> {ds}: requesting {len(pending)} symbols...")
         try:
             data = client.timeseries.get_range(dataset=ds, symbols=pending, schema="ohlcv-1d",
                                                start=START, end=END, stype_in="raw_symbol")
             dfx = data.to_df()
         except Exception as e:
-            print(f"  ❌ {ds}: {str(e)[:140]}")
+            print(f"  FAIL {ds}: {str(e)[:140]}")
             continue
         if dfx is None or len(dfx) == 0:
             continue
@@ -95,24 +99,24 @@ def fetch_all():
             g = g[["open", "high", "low", "close", "volume"]].copy()
             g.index = pd.to_datetime(g.index).tz_localize(None).normalize()
             g = g[~g.index.duplicated(keep="last")].sort_index()
-            if len(g) < 30:            # residuos (p.ej. cross-listings con días sueltos)
+            if len(g) < 30:            # leftovers (e.g. cross-listings with a few stray days)
                 continue
             g, n_adj = _adjust_splits_ohlc(g, sym)
             g.to_parquet(os.path.join(CACHE, f"{sym}.parquet"))
             got.append(sym)
             if n_adj:
-                print(f"    · {sym}: {n_adj} split(s) ajustado(s)")
+                print(f"    · {sym}: {n_adj} split(s) adjusted")
         pending = [t for t in pending if t not in set(got)]
-        print(f"  ✅ {ds}: {len(got)} símbolos guardados · faltan {len(pending)}")
+        print(f"  OK {ds}: {len(got)} symbols saved · {len(pending)} still missing")
     if pending:
-        print(f"⚠️ sin datos en ningún venue: {pending}")
+        print(f"WARNING no data on any venue: {pending}")
 
 
 if __name__ == "__main__":
     print("=" * 78)
-    print(f"DESCARGA POINT-IN-TIME S&P500 · ohlcv-1d · {START}→{END}")
+    print(f"POINT-IN-TIME S&P 500 download · ohlcv-1d · {START}->{END}")
     print("=" * 78)
     fetch_all()
     n = len([f for f in os.listdir(CACHE) if f.endswith(".parquet")])
     print("-" * 78)
-    print(f"parquets en caché: {n}")
+    print(f"cached parquet files: {n}")

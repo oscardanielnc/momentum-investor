@@ -1,11 +1,12 @@
 """
-investor — Backtest v3: BANDAS de tolerancia + WALK-FORWARD out-of-sample.
-Cierra los 2 últimos huecos honestos antes de codear el allocator:
-  A) Bandas: ¿cuánto baja el turnover sin matar el retorno? (estable día a día + menos costo)
-  B) Walk-forward: elegir lookback en 2018-2022 (in-sample) y validar en 2023-2026 (OOS).
-     Si el lookback elegido IS también rinde OOS → la elección generaliza (no fue suerte/overfit).
+Backtest v3: tolerance bands and an in-sample / out-of-sample split.
 
-Uso: python research/backtest_v3.py
+  A) Bands: how much does a no-trade band cut turnover without hurting return?
+  B) Walk-forward: choose the lookback on 2018-2022 (in-sample) and check it on 2023-2026
+     (out-of-sample). If the in-sample choice also does well out of sample, it generalizes.
+
+Uses the survivorship-biased hand-picked universe from db_fetch.py.
+Usage: python research/backtest_v3.py
 """
 import sys
 import numpy as np, pandas as pd
@@ -24,6 +25,7 @@ def metrics(r):
             (r.mean()*252)/(r.std()*np.sqrt(252)) if r.std()>0 else 0, (eq/eq.cummax()-1).min())
 
 def build(P,R,lb=90,topn=3,tcap=0.60,rebal="ME",band=0.0,costs=True):
+    """Simulate the basket strategy with an optional no-trade band. Returns (returns, turnover)."""
     base=[s for s in BASE if s in P]; stocks=[s for s in STOCKS if s in P]
     rebset=set(P.resample(rebal).last().index)
     def vp(assets,asof,frac):
@@ -54,7 +56,7 @@ def build(P,R,lb=90,topn=3,tcap=0.60,rebal="ME",band=0.0,costs=True):
             tot=sum(nw.values()); w={s:v/tot for s,v in nw.items()} if tot>0 else w
         if day in rebset:
             tw=wfun(day,E/peak-1)
-            if band>0:  # banda: no tocar posiciones cuyo cambio < band; renormalizar
+            if band>0:  # leave positions whose change is below the band untouched, then renormalize
                 kept={s:(w.get(s,0) if abs(tw.get(s,0)-w.get(s,0))<band else tw.get(s,0)) for s in set(tw)|set(w)}
                 tot=sum(kept.values()); tw={s:v/tot for s,v in kept.items()} if tot>0 else tw
             turn=0.5*sum(abs(tw.get(s,0)-w.get(s,0)) for s in set(tw)|set(w)); turns.append(turn)
@@ -67,15 +69,15 @@ def build(P,R,lb=90,topn=3,tcap=0.60,rebal="ME",band=0.0,costs=True):
     return pd.Series(rets), (np.mean(turns)*(52 if rebal.startswith("W") else 12) if turns else 0)
 
 def main():
-    print("Cargando panel…"); P=load_panel(); R=P.pct_change()
+    print("Loading panel..."); P=load_panel(); R=P.pct_change()
 
-    print("\n"+"="*68+"\nA) BANDAS DE TOLERANCIA (90/3 mensual, costos ON)\n"+"="*68)
-    print(f"{'banda':>7}{'CAGR':>8}{'Sharpe':>8}{'maxDD':>8}{'turn/año':>10}")
+    print("\n"+"="*68+"\nA) TOLERANCE BANDS (90/3 monthly, with costs)\n"+"="*68)
+    print(f"{'band':>7}{'CAGR':>8}{'Sharpe':>8}{'maxDD':>8}{'turn/yr':>10}")
     for band in [0.0,0.03,0.05,0.08]:
         r,turn=build(P,R,lb=90,topn=3,band=band,costs=True); c,v,sh,dd=metrics(r)
         print(f"{band*100:>6.0f}%{c*100:>7.1f}%{sh:>8.2f}{dd*100:>7.1f}%{turn*100:>9.0f}%")
 
-    print("\n"+"="*68+"\nB) WALK-FORWARD: elegir lookback en 2018-2022, validar 2023-2026\n"+"="*68)
+    print("\n"+"="*68+"\nB) WALK-FORWARD: choose lookback on 2018-2022, check on 2023-2026\n"+"="*68)
     print(f"{'lookback':>9}{'IS Sharpe':>11}{'OOS CAGR':>10}{'OOS Shrp':>10}{'OOS maxDD':>11}")
     res={}
     for lb in [42,63,90,120]:
@@ -84,10 +86,10 @@ def main():
         res[lb]=(is_m[2], oos)
         print(f"{lb:>9}{is_m[2]:>11.2f}{oos[0]*100:>9.1f}%{oos[2]:>10.2f}{oos[3]*100:>10.1f}%")
     best=max(res, key=lambda k:res[k][0])
-    print(f"\nMejor lookback IN-SAMPLE (2018-22) por Sharpe = {best}d")
-    print(f"→ su desempeño OUT-OF-SAMPLE (2023-26): CAGR {res[best][1][0]*100:.1f}% · "
+    print(f"\nBest IN-SAMPLE lookback (2018-22) by Sharpe = {best}d")
+    print(f"-> its OUT-OF-SAMPLE result (2023-26): CAGR {res[best][1][0]*100:.1f}% · "
           f"Sharpe {res[best][1][2]:.2f} · maxDD {res[best][1][3]*100:.1f}%")
-    print("Si el lookback elegido IS está entre los mejores OOS → la elección generaliza (no fue suerte).")
+    print("If the in-sample choice is among the best out of sample, the choice generalizes.")
 
 if __name__=="__main__":
     main()

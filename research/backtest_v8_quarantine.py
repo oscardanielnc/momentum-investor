@@ -1,20 +1,21 @@
 """
-investor — Backtest v8: CUARENTENA + REINVERSIÓN tras un trailing stop (la idea de Oscar).
+Backtest v8: quarantine and reinvestment after a trailing stop.
 
-Pregunta: cuando un trailing stop corta una posición, ¿qué hacemos con esa caja?
-  (a) esperar al próximo rebalanceo mensual (baseline validado v5),
-  (b) esperar al siguiente día y reinvertir en OTRO sector,
-  (c) reinvertir el MISMO día en el mejor momentum de OTRO sector (el sector cortado cae),
-  (d) reinvertir el mismo día en el mejor momentum de CUALQUIER sector.
-Y en paralelo: ¿cuántos días de CUARENTENA al nombre cortado antes de poder recomprarlo (0/2/5)?
+Question: when a trailing stop cuts a position, what should happen to that cash?
+  (a) wait for the next monthly rebalance (the v5 baseline),
+  (b) wait one day and reinvest in a DIFFERENT sector,
+  (c) reinvest the same day in the best momentum name of a different sector,
+  (d) reinvest the same day in the best momentum name of ANY sector.
+And: how many days of quarantine for the stopped name before it can be bought again (0/2/5)?
 
-Overlay sobre el core validado: top-5 momentum multi-sector, equiponderado, rebalanceo mensual,
-trailing stop 20%. Costos 10bps por trade (incluye stops y reinversiones intra-mes).
+Overlay on the core: top-5 multi-sector momentum, equal weight, monthly rebalance, 20%
+trailing stop. Costs 10 bps per trade (stops and intra-month reinvestments included).
 
-Ancla de validación: reinvest=cash_month + quar=0 debe reproducir el "MULTI top-5 +TS20%" de v5
-(CAGR ~36.5%, maxDD ~-30.7%). Si coincide, el harness es correcto.
+Harness check: reinvest=cash_month with quar=0 must reproduce v5's "MULTI top-5 +TS20%"
+(CAGR ~36.5%, maxDD ~-30.7%).
 
-Uso: python research/backtest_v8_quarantine.py
+Uses the survivorship-biased 36-stock universe (see backtest_v10_pit.py).
+Usage: python research/backtest_v8_quarantine.py
 """
 import sys
 import numpy as np, pandas as pd
@@ -25,16 +26,18 @@ except Exception: pass
 
 
 def run_q(P, R, topn=5, trail=0.20, lb=90, reinvest="cash_month", quar_days=0, daily_reb=False):
-    """Core top-N + trailing stop, con overlay de cuarentena/reinversión.
-      reinvest: 'cash_month' | 'next_day' | 'now_diff' | 'now_any'
-      quar_days: días que un nombre cortado queda bloqueado para reentrar (rebalanceo y reemplazo).
-      daily_reb: si True, rebalancea también a diario cuando CAMBIA la membresía del top-N
-                 (como el robot vivo: recompra al día siguiente salvo cuarentena). El mensual siempre corre.
+    """Top-N core with trailing stops plus a quarantine/reinvestment overlay.
+
+      reinvest:  'cash_month' | 'next_day' | 'now_diff' | 'now_any'
+      quar_days: days a stopped name stays blocked from re-entry (rebalance and replacement).
+      daily_reb: also rebalance daily whenever top-N membership changes (as the live robot did:
+                 it bought back the next day unless quarantined). The monthly rebalance always runs.
+    Returns (daily returns, average sectors held, number of stops).
     """
     rebset = set(P.resample("ME").last().index); days = R.index
     w = {}; peaks = {}; E = 1.0; rets = {}; secs = []
-    quar = {}                 # symbol -> índice de día hasta el cual está bloqueado (reentra si i >= quar[s])
-    pending = []              # [(weight, cut_sector)] a reinvertir al día siguiente (modo next_day)
+    quar = {}                 # symbol -> day index until which it is blocked
+    pending = []              # [(weight, cut_sector)] to reinvest the next day (next_day mode)
     universe = [s for s in UNIV if s in P]
     n_stops = 0
 
@@ -57,7 +60,7 @@ def run_q(P, R, topn=5, trail=0.20, lb=90, reinvest="cash_month", quar_days=0, d
             nw = {s: w[s] * (1 + _ret(s)) for s in w}
             tot = sum(nw.values()); w = {s: v / tot for s, v in nw.items()} if tot > 0 else w
 
-            # (A) reinvertir pendientes del día anterior (modo next_day)
+            # (A) reinvest what was pending from the previous day (next_day mode)
             if reinvest == "next_day" and pending and w.get("CASH", 0) > 1e-9:
                 still = []
                 for wt, cutsec in pending:
@@ -72,20 +75,20 @@ def run_q(P, R, topn=5, trail=0.20, lb=90, reinvest="cash_month", quar_days=0, d
                 if w.get("CASH", 0) <= 1e-9: w.pop("CASH", None)
                 pending = still
 
-            # (B) trailing stops → cuarentena + reinversión según modo
+            # (B) trailing stops -> quarantine + reinvestment according to the mode
             if trail:
                 for s in list(w):
                     if s == "CASH": continue
                     peaks[s] = max(peaks.get(s, price(s, i)), price(s, i))
                     if price(s, i) <= peaks[s] * (1 - trail):
                         wt = w.pop(s); cutsec = SECTOR[s]; n_stops += 1
-                        quar[s] = i + quar_days                 # bloquea reentrada quar_days
-                        day_cost += wt * COST                   # coste de la venta (todos los modos)
+                        quar[s] = i + quar_days
+                        day_cost += wt * COST                   # cost of the sale (all modes)
                         if reinvest in ("now_diff", "now_any"):
                             repl = best_repl(i, day, cutsec, diff_sector=(reinvest == "now_diff"))
                             if repl is not None:
                                 w[repl] = w.get(repl, 0) + wt; peaks[repl] = price(repl, i)
-                                day_cost += wt * COST           # coste de la compra
+                                day_cost += wt * COST           # cost of the purchase
                             else:
                                 w["CASH"] = w.get("CASH", 0) + wt
                         elif reinvest == "next_day":
@@ -96,7 +99,7 @@ def run_q(P, R, topn=5, trail=0.20, lb=90, reinvest="cash_month", quar_days=0, d
             if day_cost:
                 E *= (1 - day_cost); dr = (1 + dr) * (1 - day_cost) - 1
 
-        # gatillo diario opcional: rebalancea si CAMBIA la membresía del top-N (como el robot vivo)
+        # optional daily trigger: rebalance when top-N membership changes (like the live robot)
         do_reb = day in rebset
         if daily_reb and not do_reb and i > 0:
             top_now = set(sorted([s for s in universe if quar.get(s, -1) <= i],
@@ -104,7 +107,7 @@ def run_q(P, R, topn=5, trail=0.20, lb=90, reinvest="cash_month", quar_days=0, d
             held = {s for s, wv in w.items() if s != "CASH" and wv > 0.01}
             if top_now != held: do_reb = True
 
-        # rebalanceo: top-N excluyendo cuarentenados; redepliega caja
+        # rebalance: top-N excluding quarantined names; redeploys cash
         if do_reb:
             ranked = sorted([s for s in universe if quar.get(s, -1) <= i],
                             key=lambda s: rmom(P, R, s, day, lb), reverse=True)[:topn]
@@ -119,40 +122,40 @@ def run_q(P, R, topn=5, trail=0.20, lb=90, reinvest="cash_month", quar_days=0, d
 
 
 def main():
-    print("Cargando panel…"); P = load_panel(); R = P.pct_change()
+    print("Loading panel..."); P = load_panel(); R = P.pct_change()
     have = [s for s in UNIV if s in P]
-    print(f"Universo: {len(have)}/{len(UNIV)} acciones, {len(set(SECTOR[s] for s in have))} sectores\n")
+    print(f"Universe: {len(have)}/{len(UNIV)} stocks, {len(set(SECTOR[s] for s in have))} sectors\n")
 
     CONFIGS = [
-        ("baseline: cash→mensual (v5)",      dict(reinvest="cash_month", quar_days=0)),
-        ("cash→mensual · cuar 2d",           dict(reinvest="cash_month", quar_days=2)),
-        ("next_day otro sector · cuar 0d",   dict(reinvest="next_day",   quar_days=0)),
-        ("next_day otro sector · cuar 2d",   dict(reinvest="next_day",   quar_days=2)),
-        ("YA otro sector · cuar 0d",         dict(reinvest="now_diff",   quar_days=0)),
-        ("YA otro sector · cuar 2d",         dict(reinvest="now_diff",   quar_days=2)),
-        ("YA otro sector · cuar 5d",         dict(reinvest="now_diff",   quar_days=5)),
-        ("YA cualquier sector · cuar 2d",    dict(reinvest="now_any",    quar_days=2)),
+        ("baseline: cash->monthly (v5)",     dict(reinvest="cash_month", quar_days=0)),
+        ("cash->monthly · quar 2d",          dict(reinvest="cash_month", quar_days=2)),
+        ("next_day other sector · quar 0d",  dict(reinvest="next_day",   quar_days=0)),
+        ("next_day other sector · quar 2d",  dict(reinvest="next_day",   quar_days=2)),
+        ("NOW other sector · quar 0d",       dict(reinvest="now_diff",   quar_days=0)),
+        ("NOW other sector · quar 2d",       dict(reinvest="now_diff",   quar_days=2)),
+        ("NOW other sector · quar 5d",       dict(reinvest="now_diff",   quar_days=5)),
+        ("NOW any sector · quar 2d",         dict(reinvest="now_any",    quar_days=2)),
     ]
-    # Régimen DIARIO = como opera el robot vivo (recompra al día siguiente salvo cuarentena).
-    # Aquí sí se puede medir si la cuarentena frena el whipsaw de recomprar al nombre stopeado.
+    # DAILY regime = how the live robot behaved (buys back the next day unless quarantined).
+    # Here the quarantine can show whether it stops the whipsaw of re-buying the stopped name.
     CONFIGS += [
-        ("[DIARIO] cash · cuar 0d (robot HOY)", dict(reinvest="cash_month", quar_days=0, daily_reb=True)),
-        ("[DIARIO] cash · cuar 2d",             dict(reinvest="cash_month", quar_days=2, daily_reb=True)),
-        ("[DIARIO] cash · cuar 5d",             dict(reinvest="cash_month", quar_days=5, daily_reb=True)),
-        ("[DIARIO] YA otro sector · cuar 2d",   dict(reinvest="now_diff",   quar_days=2, daily_reb=True)),
+        ("[DAILY] cash · quar 0d (live robot)", dict(reinvest="cash_month", quar_days=0, daily_reb=True)),
+        ("[DAILY] cash · quar 2d",              dict(reinvest="cash_month", quar_days=2, daily_reb=True)),
+        ("[DAILY] cash · quar 5d",              dict(reinvest="cash_month", quar_days=5, daily_reb=True)),
+        ("[DAILY] NOW other sector · quar 2d",  dict(reinvest="now_diff",   quar_days=2, daily_reb=True)),
     ]
     res = {}
     for name, kw in CONFIGS:
         res[name] = run_q(P, R, topn=5, trail=0.20, **kw)
 
-    print("="*84 + "\nGLOBAL 2018+ (costos ON, trailing 20%, top-5)\n" + "="*84)
+    print("="*84 + "\nGLOBAL 2018+ (with costs, 20% trailing, top-5)\n" + "="*84)
     print(f"{'config':34}{'CAGR':>8}{'Sharpe':>8}{'maxDD':>8}{'Calmar':>8}{'sect':>6}{'stops':>7}")
     pool = {}
     for n, (r, sec, ns) in res.items():
         c, sh, dd = metrics(r); cal = c/abs(dd) if dd < 0 else float('nan'); pool[n] = (c, sh, dd, cal)
         print(f"{n:34}{c*100:>7.1f}%{sh:>8.2f}{dd*100:>7.1f}%{cal:>8.2f}{sec:>6.1f}{ns:>7}")
 
-    print("\n" + "="*84 + "\nEN CADA CRASH (maxDD en la ventana)\n" + "="*84)
+    print("\n" + "="*84 + "\nIN EACH CRASH (max drawdown inside the window)\n" + "="*84)
     print(f"{'config':34}" + "".join(f"{k:>15}" for k in CRASHES))
     for n, (r, _, _) in res.items():
         cells = []
@@ -162,7 +165,7 @@ def main():
             cells.append(f"{dd*100:>14.1f}%")
         print(f"{n:34}" + "".join(cells))
 
-    print("\nLectura: comparar contra baseline. Sube Calmar/Sharpe sin empeorar maxDD → la idea vale.")
+    print("\nReading: compare against the baseline. Higher Calmar/Sharpe without a worse maxDD means the idea helps.")
 
 if __name__ == "__main__":
     main()

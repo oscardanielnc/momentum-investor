@@ -1,13 +1,15 @@
 """
-investor — Backtest v2: COSTOS reales + TURNOVER + ROBUSTEZ (barrido de parámetros).
-Oscar acepta ~−32% si rinde más → NO se aprieta el freno. Se valida si la canasta:
-  (a) sobrevive a costos de ejecución (spread/slippage; Alpaca comisión $0 pero spread existe),
-  (b) no rota tanto que rompa el "estable día a día",
-  (c) es ROBUSTA (funciona en un rango de parámetros, no solo en uno = no overfit).
+Backtest v2: transaction costs, turnover and robustness (parameter sweep).
 
-Holdings en VALOR (capturan drift entre rebalanceos) → turnover y costos exactos.
-Costos: ETF 4 bps, acción individual 10 bps por cada $ rotado (conservador para semis líquidos).
-Uso: python research/backtest_v2.py
+Checks whether the rotating semiconductor basket from v1
+  (a) survives execution costs (spread/slippage; Alpaca charges no commission),
+  (b) does not trade so much that it becomes unstable day to day,
+  (c) is robust: works across a range of parameters, not just one cell.
+The drawdown brake is kept as in v1 (a drawdown near -32% was acceptable at this stage).
+
+Holdings are tracked in value, so drift between rebalances is captured and turnover and costs
+are exact. Costs: 4 bps for ETFs, 10 bps for single stocks per dollar traded.
+Usage: python research/backtest_v2.py
 """
 import sys
 import numpy as np, pandas as pd
@@ -26,6 +28,7 @@ def metrics(r):
             (eq/eq.cummax()-1).min())
 
 def build(P, R, params, costs=True):
+    """Simulate the basket strategy. Returns (daily returns, annual turnover)."""
     base=[s for s in BASE if s in P]; stocks=[s for s in STOCKS if s in P]
     rebal=set(P.resample(params["rebal"]).last().index)
     LB, TOPN, TCAP = params["lb"], params["topn"], params["tcap"]
@@ -53,7 +56,7 @@ def build(P, R, params, costs=True):
         if tot<0.999: w[CASH]=w.get(CASH,0)+(1-tot)
         return w
 
-    # Simulación con PESOS + drift + costo explícito como drag del retorno del día (correcto).
+    # Weights drift with returns; costs are applied as a drag on the rebalance day's return.
     days=R.index; w={}; E=1.0; peak=1.0; rets={}; turns=[]
     for i,day in enumerate(days):
         day_ret=0.0
@@ -77,18 +80,16 @@ def build(P, R, params, costs=True):
 def _periods(freq): return 52 if freq.startswith("W") else 12
 
 def main():
-    print("Cargando panel…"); P=load_panel(); R=P.pct_change()
+    print("Loading panel..."); P=load_panel(); R=P.pct_change()
     default=dict(lb=63, topn=3, tcap=0.60, rebal="ME")
 
-    # 1) impacto de costos + turnover
-    print("\n"+"="*70+"\n1) COSTOS y TURNOVER (DYN-CANASTA default 63/3/0.60, mensual)\n"+"="*70)
-    for label, costs in [("SIN costos", False), ("CON costos", True)]:
+    print("\n"+"="*70+"\n1) COSTS and TURNOVER (DYN-BASKET default 63/3/0.60, monthly)\n"+"="*70)
+    for label, costs in [("no costs", False), ("with costs", True)]:
         r, turn = build(P, R, default, costs=costs)
         c,v,sh,dd = metrics(r)
-        print(f"{label:11} CAGR {c*100:5.1f}%  Sharpe {sh:.2f}  maxDD {dd*100:6.1f}%  turnover anual ~{turn*100:.0f}%")
+        print(f"{label:11} CAGR {c*100:5.1f}%  Sharpe {sh:.2f}  maxDD {dd*100:6.1f}%  annual turnover ~{turn*100:.0f}%")
 
-    # 2) robustez: barrido lookback × topN (costos ON, mensual, tcap 0.60)
-    print("\n"+"="*70+"\n2) ROBUSTEZ — CAGR / maxDD por (lookback, topN) [costos ON]\n"+"="*70)
+    print("\n"+"="*70+"\n2) ROBUSTNESS: CAGR / maxDD by (lookback, topN) [with costs]\n"+"="*70)
     LBS=[42,63,90,120]; TOPNS=[2,3,4,5]
     print(f"{'lb/topN':>8}"+"".join(f"{n:>14}" for n in TOPNS))
     for lb in LBS:
@@ -97,15 +98,14 @@ def main():
             r,_=build(P,R,dict(lb=lb,topn=n,tcap=0.60,rebal="ME"),costs=True)
             c,v,sh,dd=metrics(r); cells.append(f"{c*100:5.1f}%/{dd*100:5.1f}%")
         print(f"{lb:>8}"+"".join(f"{x:>14}" for x in cells))
-    print("\nLectura: si CAGR/maxDD son parecidos en toda la grilla → robusto. Si solo brilla 1 celda → overfit.")
+    print("\nReading: similar CAGR/maxDD across the grid means robust. A single bright cell means overfit.")
 
-    # 3) head-to-head de las configs prometedoras (costos ON)
-    print("\n"+"="*70+"\n3) HEAD-TO-HEAD configs candidatas [costos ON]\n"+"="*70)
-    print(f"{'config':22}{'CAGR':>7}{'Sharpe':>8}{'maxDD':>8}{'turn/año':>10}")
-    cfgs=[("63/3 mensual",dict(lb=63,topn=3,tcap=0.60,rebal="ME")),
-          ("90/3 mensual",dict(lb=90,topn=3,tcap=0.60,rebal="ME")),
-          ("90/3 semanal", dict(lb=90,topn=3,tcap=0.60,rebal="W-FRI")),
-          ("63/3 semanal", dict(lb=63,topn=3,tcap=0.60,rebal="W-FRI"))]
+    print("\n"+"="*70+"\n3) HEAD-TO-HEAD of candidate configs [with costs]\n"+"="*70)
+    print(f"{'config':22}{'CAGR':>7}{'Sharpe':>8}{'maxDD':>8}{'turn/yr':>10}")
+    cfgs=[("63/3 monthly",dict(lb=63,topn=3,tcap=0.60,rebal="ME")),
+          ("90/3 monthly",dict(lb=90,topn=3,tcap=0.60,rebal="ME")),
+          ("90/3 weekly",  dict(lb=90,topn=3,tcap=0.60,rebal="W-FRI")),
+          ("63/3 weekly",  dict(lb=63,topn=3,tcap=0.60,rebal="W-FRI"))]
     for lbl,cf in cfgs:
         r,turn=build(P,R,cf,costs=True); c,v,sh,dd=metrics(r)
         print(f"{lbl:22}{c*100:6.1f}%{sh:>8.2f}{dd*100:>7.1f}%{turn*100:>9.0f}%")
