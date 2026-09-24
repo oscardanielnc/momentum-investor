@@ -16,6 +16,9 @@ data/
 
 # Datos de mercado descargados (grandes, regenerables)
 research/data_db/
+research/data_etf/
+research/data_etf_long/
+research/data_fund/
 *.parquet
 
 # Logs y temporales
