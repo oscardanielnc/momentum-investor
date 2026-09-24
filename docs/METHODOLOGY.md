@@ -91,7 +91,7 @@ benchmarks alike (`backtest_v10_pit.py`, sections A-C):
 
 Same rules, same engine, same dates: choosing the universe in 2026 adds 14.9 percentage
 points of CAGR (the script prints `+14.9 pp`). In the honest universe the strategy trails
-QQQ on return, drawdown and Calmar.
+QQQ on return and Calmar, with a similar drawdown (-35.2% against -35.6%).
 
 The earlier close-only backtests on the 36-name universe reported more:
 `backtest_v5_multisector.py` gives 36.5% CAGR / -30.7% / Calmar 1.19 for the monthly top 5

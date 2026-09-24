@@ -19,18 +19,19 @@ one-way costs); only the universe changes. Source: `research/backtest_v10_pit.py
 | Universe | CAGR | Max drawdown | Sharpe | Calmar |
 |---|---:|---:|---:|---:|
 | 36 leaders chosen in 2026 (the robot's list) | 29.2% | -29.7% | 1.04 | 0.98 |
-| S&P 500 point-in-time (678 historical members) | 14.4% | -35.2% | 0.68 | 0.41 |
+| S&P 500 point-in-time (678 tickers with price data) | 14.4% | -35.2% | 0.68 | 0.41 |
 | QQQ buy and hold | 18.8% | -35.6% | 0.83 | 0.53 |
 
 Choosing the list in 2026 is worth 14.9 points of CAGR. On the honest universe the strategy
-loses to QQQ on return, drawdown and Calmar, and it also trails QQQ out of sample (2023-26:
-27.7% against 32.6%).
+loses to QQQ on return and Calmar with a similar drawdown (-35.2% against -35.6%), and it also
+trails QQQ out of sample (2023-26: 27.7% against 32.6%).
 
 The 36% figure came from earlier, simpler backtests on the same 36 names (close-only stops,
 same-day execution): 36.5% CAGR in `backtest_v5_multisector.py` and 37.4% for the robot's
 exact configuration in `backtest_v9_hysteresis.py`. The v10 engine replays the robot's real
-mechanics (intraday trailing stop, next-open execution, stop reset on rebalance) and brings
-the same 36 names down to 29.2%. The universe does the rest.
+mechanics (intraday trailing stop, next-open execution, stop reset on rebalance) and gives the
+same 36 names 29.2%. That step also moves the start date, so the drop from about 37% to 29.2%
+is not attributed to the mechanics alone; the drop from 29.2% to 14.4% is the universe alone.
 
 [docs/METHODOLOGY.md](docs/METHODOLOGY.md) explains how the point-in-time universe was built,
 the rest of the v10 results (costs, crises, parameter grid, walk-forward) and the limits of
@@ -38,7 +39,9 @@ the audit, including known errors in the split-adjustment heuristic.
 
 ## What else was tested and rejected
 
-Rules fixed before looking at results, compared with QQQ over the same window.
+Each script states its rules in its docstring, and v13's are written as pre-registered rules.
+Rules and results were committed together, so the git history cannot prove which came first.
+Every test is compared with QQQ over the same window.
 
 | Test | Script | Window | Result | QQQ |
 |---|---|---|---|---|
@@ -56,8 +59,9 @@ strategy and the benchmark alike.
 
 In the value test, the quality filter alone returned 9.9%, while requiring a 35% drop from the
 52-week high produced the loss: the screen kept buying falling stocks. Fundamentals were
-available for 560 of the 678 tickers; the gaps include delisted companies with no current
-ticker mapping, which can only bias the test in favor of the screen.
+available for 560 of the 678 tickers. The gaps include delisted companies with no current
+ticker mapping, which tilts the test in favor of the screen (it cannot buy companies that
+later disappeared), and companies with non-calendar fiscal years.
 
 ## What survives
 
