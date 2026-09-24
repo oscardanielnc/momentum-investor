@@ -141,16 +141,6 @@ def submit_notional(symbol, side, usd, coid=None):
         return {"dry_run": True, **body}
     return _req("POST", "/v2/orders", json=body)
 
-def submit_qty(symbol, side, qty, coid=None):
-    """Orden de mercado por cantidad (para vender exactamente lo que se tiene)."""
-    body = {"symbol": symbol, "qty": round(abs(qty), 6), "side": side,
-            "type": "market", "time_in_force": "day",
-            "client_order_id": coid or _coid("qt", symbol)}
-    if DRY_RUN:
-        log.info(f"[alpaca] DRY order {side} {abs(qty)} {symbol}")
-        return {"dry_run": True, **body}
-    return _req("POST", "/v2/orders", json=body)
-
 def place_trailing_stop(symbol, qty, trail_percent, coid=None):
     """Trailing stop NATIVO (SELL, GTC) = 'sale a tiempo' aunque el bot esté caído.
     Alpaca exige ACCIONES ENTERAS en stops → redondeo hacia abajo; si <1 acción, se omite."""

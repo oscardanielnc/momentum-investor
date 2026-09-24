@@ -9,7 +9,7 @@ Holdings en VALOR (capturan drift entre rebalanceos) → turnover y costos exact
 Costos: ETF 4 bps, acción individual 10 bps por cada $ rotado (conservador para semis líquidos).
 Uso: python research/backtest_v2.py
 """
-import sys, itertools
+import sys
 import numpy as np, pandas as pd
 from db_fetch import load_panel, STOCKS
 try: sys.stdout.reconfigure(encoding="utf-8")

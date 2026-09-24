@@ -155,7 +155,6 @@ def rotation(O, C, menu, a, b, k=2, score="12-1", gate=False, hyst=0, cash=None)
     month_end = pd.Series(idx, index=idx).groupby([idx.year, idx.month]).tail(1)
     me_set = set(month_end)
     held, eq, out = [], 1.0, []
-    w = {}
     pending = None
     for i, d in enumerate(idx):
         if pending is not None and i > 0:

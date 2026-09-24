@@ -136,15 +136,6 @@ class DB:
                  "VALUES(?,?,?,?,?,?)", (_now(), rebalance_id, summary, model,
                                          json.dumps(inputs) if inputs else None, published))
 
-    def record_event(self, headline, source=None, severity="info", symbols=None, action=None, raw=None):
-        self._ex("INSERT INTO event_news(ts,headline,source,severity,symbols,action_taken,raw_json) "
-                 "VALUES(?,?,?,?,?,?,?)", (_now(), headline, source, severity,
-                 ",".join(symbols) if symbols else None, action, json.dumps(raw) if raw else None))
-
-    def add_contribution(self, amount, currency="USDT", note=None):
-        self._ex("INSERT INTO contribution(ts,amount,currency,note) VALUES(?,?,?,?)",
-                 (_now(), float(amount), currency, note))
-
     def set_config(self, key, value, note=None):
         self._ex("INSERT OR REPLACE INTO config(key,value,updated_at,note) VALUES(?,?,?,?)",
                  (key, str(value), _now(), note))

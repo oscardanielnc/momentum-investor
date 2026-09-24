@@ -46,7 +46,7 @@ def rmom(P,R,s,asof,lb=90):
 def run_multi(P,R,topn=5,trail=None,lb=90):
     """Top-N momentum multi-sector, equiponderado, siempre invertido. trail=None o 0.xx (stop %)."""
     rebset=set(P.resample("ME").last().index); days=R.index
-    w={}; peaks={}; eqp_w=None; E=1.0; peak=1.0; rets={}; secs=[]
+    w={}; peaks={}; E=1.0; peak=1.0; rets={}; secs=[]
     universe=[s for s in UNIV if s in P]
     for i,day in enumerate(days):
         dr=0.0

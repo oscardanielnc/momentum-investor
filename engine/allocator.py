@@ -48,10 +48,9 @@ def _riskadj_mom(P, R, sym, asof):
     return (m * 252 / LB) / vol if vol > 0 else -9.0
 
 
-def compute_target(prices: pd.DataFrame, current: dict | None = None):
+def compute_target(prices: pd.DataFrame):
     """PURO. Selecciona el TOP-5 por momentum ajustado-riesgo y lo equipondera (20% c/u).
-    Siempre invertido, sin caja. Devuelve (target_weights, meta). `current` no se usa para banda
-    (el rebalanceo es mensual a top-5); el orquestador decide actuar si cambia la membresía."""
+    Siempre invertido, sin caja. Devuelve (target_weights, meta). El orquestador decide si actuar."""
     P = prices.sort_index()
     R = P.pct_change()
     asof = P.index[-1]

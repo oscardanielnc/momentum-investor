@@ -250,7 +250,7 @@ def do_rebalance(d: DB, reason, equity, force=False):
         d.log_error("orchestrator", "panel de precios insuficiente")
         return "no_data"
     cur = current_weights(equity)
-    target, meta = allocator.compute_target(prices, current=cur or None)
+    target, meta = allocator.compute_target(prices)
     held = {s for s, w in cur.items() if w > 0.01}
     if force:
         # MENSUAL: reset al top-5. Salta si nada cambió y el drift es chico (anti-whipsaw).

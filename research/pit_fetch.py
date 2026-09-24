@@ -32,7 +32,6 @@ CACHE = os.path.join(HERE, "data_pit")
 os.makedirs(CACHE, exist_ok=True)
 START, END = "2018-05-01", "2026-06-27"
 DATASETS = ["XNAS.ITCH", "XNYS.PILLAR", "ARCX.PILLAR"]
-BATCH = 682   # todos en una llamada por dataset (cost-check hecho: ~$3.8 total)
 
 
 def needed_tickers():

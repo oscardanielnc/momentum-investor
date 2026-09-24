@@ -118,9 +118,6 @@ def run_q(P, R, topn=5, trail=0.20, lb=90, reinvest="cash_month", quar_days=0, d
     return pd.Series(rets), (np.mean(secs) if secs else 0), n_stops
 
 
-REGIME_LABEL = {False: "mensual", True: "DIARIO (robot vivo)"}
-
-
 def main():
     print("Cargando panel…"); P = load_panel(); R = P.pct_change()
     have = [s for s in UNIV if s in P]

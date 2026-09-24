@@ -6,7 +6,7 @@ OUT-OF-SAMPLE (2023-2026). Si el (topN, trail) elegido IS también rinde OOS →
 Uso: python research/backtest_v6_walkforward.py
 """
 import sys
-import numpy as np, pandas as pd
+import numpy as np
 from db_fetch import load_panel
 from backtest_v5_multisector import run_multi, metrics
 try: sys.stdout.reconfigure(encoding="utf-8")
@@ -28,7 +28,7 @@ def main():
     rows={}
     for n,t in grid:
         r,_=run_multi(P,R,topn=n,trail=t,lb=90)
-        (is_c,is_sh,is_dd),(o_c,o_sh,o_dd)=split(r)
+        (_,is_sh,_),(o_c,o_sh,o_dd)=split(r)
         cal=o_c/abs(o_dd) if o_dd<0 else float('nan')
         rows[(n,t)]=dict(is_sh=is_sh,oc=o_c,osh=o_sh,odd=o_dd,cal=cal)
         lbl=f"top{n} TS{int(t*100) if t else 0}"
@@ -56,7 +56,7 @@ def main():
     print("="*82)
     r,_=run_multi(P,R,topn=5,trail=0.20,lb=90)
     _,(o_c,o_sh,o_dd)=split(r)
-    full_c,full_sh,full_dd=metrics(r)
+    _,_,full_dd=metrics(r)
     print(f"top-5 TS20%: full 2018+ maxDD {full_dd*100:.1f}% · OOS 2023+ maxDD {o_dd*100:.1f}%")
     worst=min(full_dd,o_dd)
     for cap in (0.20,0.25,0.27,0.30):

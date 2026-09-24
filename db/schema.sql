@@ -23,77 +23,6 @@ CREATE TABLE IF NOT EXISTS config (
     note        TEXT
 );
 
--- Sleeves (bolsillos). El defensivo es un SLOT enchufable: hoy USDC/Earn,
--- mañana un bono tokenizado cambiando 'instrument' sin tocar código.
-CREATE TABLE IF NOT EXISTS sleeve (
-    id           TEXT PRIMARY KEY,        -- 'core' | 'momentum' | 'crypto' | 'defensive'
-    label        TEXT NOT NULL,
-    instrument   TEXT,                    -- p.ej. 'BINANCE_EARN_USDC'; futuro 'TLTB'
-    enabled      INTEGER NOT NULL DEFAULT 1,
-    target_min   REAL NOT NULL DEFAULT 0, -- banda de tolerancia (±) para no sobre-operar
-    target_max   REAL NOT NULL DEFAULT 1,
-    updated_at   TEXT NOT NULL
-);
-
--- Universo de activos. eligible = existe en Binance (criterio de Oscar).
--- signalable = el subyacente tiene histórico para el filtro de momentum.
-CREATE TABLE IF NOT EXISTS asset (
-    symbol           TEXT PRIMARY KEY,    -- par Binance, p.ej. 'NVDABUSDT'
-    underlying       TEXT,                -- ticker real para histórico Alpaca, p.ej. 'NVDA'
-    sleeve_id        TEXT REFERENCES sleeve(id),
-    kind             TEXT NOT NULL,       -- 'bstock' | 'crypto' | 'cash'
-    eligible         INTEGER NOT NULL DEFAULT 1,   -- existe en Binance
-    signalable       INTEGER NOT NULL DEFAULT 0,   -- tiene histórico suficiente
-    history_start    TEXT,                -- primera barra disponible (Alpaca)
-    last_seen        TEXT,                -- última vez confirmado en exchangeInfo
-    note             TEXT
-);
-
--- ============================================================================
--- 2. PRECIOS Y SEÑALES
--- ============================================================================
-
--- Barras diarias del subyacente (Alpaca) para el filtro de momentum.
-CREATE TABLE IF NOT EXISTS price_daily (
-    symbol   TEXT NOT NULL,
-    ts       TEXT NOT NULL,               -- fecha de la barra (UTC)
-    open     REAL, high REAL, low REAL, close REAL, volume REAL,
-    source   TEXT NOT NULL DEFAULT 'alpaca',
-    PRIMARY KEY (symbol, ts)
-);
-
--- Snapshot intradía (Binance) usado por el heartbeat / circuit breaker.
-CREATE TABLE IF NOT EXISTS price_tick (
-    symbol   TEXT NOT NULL,
-    ts       TEXT NOT NULL,
-    bid      REAL, ask REAL, last REAL,
-    spread_bps REAL,
-    PRIMARY KEY (symbol, ts)
-);
-
--- Señales calculadas por ciclo (momentum, régimen, stop chandelier...).
-CREATE TABLE IF NOT EXISTS signal (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts          TEXT NOT NULL,
-    symbol      TEXT NOT NULL,
-    kind        TEXT NOT NULL,            -- 'momentum' | 'regime' | 'chandelier' | 'event'
-    value       REAL,
-    detail_json TEXT,                     -- payload completo para auditar
-    acted       INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_signal_ts ON signal(ts);
-
--- SOMBRAS: pesos que un sleeve/idea candidata TENDRÍA, sin operar (validación OOS).
-CREATE TABLE IF NOT EXISTS shadow_signal (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts          TEXT NOT NULL,
-    candidate   TEXT NOT NULL,            -- nombre de la idea/sleeve sombra
-    symbol      TEXT NOT NULL,
-    weight      REAL NOT NULL,
-    detail_json TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_shadow_ts ON shadow_signal(ts);
-
 -- ============================================================================
 -- 3. CARTERA: OBJETIVO, POSICIONES, ÓRDENES, EQUITY
 -- ============================================================================
@@ -155,35 +84,8 @@ CREATE TABLE IF NOT EXISTS equity_history (
 );
 
 -- ============================================================================
--- 4. APORTES (LEDGER) Y RENDIMIENTO TIME-WEIGHTED
--- ============================================================================
-
--- Separa "cuánto puse" de "cuánto ganó el mercado" (TWR). Aportes mensuales.
-CREATE TABLE IF NOT EXISTS contribution (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts          TEXT NOT NULL,
-    amount      REAL NOT NULL,             -- + aporte, - retiro
-    currency    TEXT NOT NULL DEFAULT 'USDT',
-    note        TEXT
-);
-
--- ============================================================================
 -- 5. EVENTOS, NOTICIAS Y JUSTIFICACIÓN IA
 -- ============================================================================
-
--- Eventos/noticias detectados. La noticia NO dispara venta (acierto ~17%):
--- aprieta stops / baja exposición; el PRECIO confirma vía circuit breaker.
-CREATE TABLE IF NOT EXISTS event_news (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts           TEXT NOT NULL,
-    headline     TEXT NOT NULL,
-    source       TEXT,
-    severity     TEXT,                     -- 'info'|'watch'|'tighten'|'derisk'
-    symbols      TEXT,                     -- afectados (csv)
-    action_taken TEXT,                     -- qué hizo el robot (o nada)
-    raw_json     TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_event_ts ON event_news(ts);
 
 -- Justificación IA de cada cambio (para dashboard público y auditoría).
 CREATE TABLE IF NOT EXISTS ai_explanation (
@@ -266,7 +168,3 @@ CREATE VIEW IF NOT EXISTS v_pending_review AS
 SELECT ts, kind, symbol, severity, detail
 FROM review_queue WHERE reviewed = 0 ORDER BY ts DESC;
 
--- ¿Está vivo el robot? Último latido por tipo de ciclo.
-CREATE VIEW IF NOT EXISTS v_last_heartbeat AS
-SELECT cycle_type, MAX(ts) AS last_ts
-FROM heartbeat GROUP BY cycle_type;

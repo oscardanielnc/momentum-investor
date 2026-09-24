@@ -64,7 +64,6 @@ def main():
         time.sleep(0.05)
     P = pd.DataFrame(px).sort_index().ffill()
     R = P.pct_change()
-    last = P.iloc[-1]
     def ret(n): return (P.iloc[-1] / P.iloc[-n] - 1) * 100
     r3, r6, r12 = ret(63), ret(126), ret(252)
     vol = R.tail(20).std() * np.sqrt(252) * 100
