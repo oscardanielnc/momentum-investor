@@ -118,6 +118,71 @@ What it does and does not do:
 
 [DEPLOY.md](DEPLOY.md) covers the systemd setup that ran both on a Linux VM.
 
+## Engineering
+
+The strategy did not beat QQQ, but the system around it was built to trade real money safely,
+and the research was built to catch exactly the kind of error it found. The main decisions,
+with the code that implements each one:
+
+**Trading safety**
+
+- **Safe by default.** Nothing is sent unless `INVESTOR_DRY_RUN=false`, and the live endpoint
+  also needs `INVESTOR_ALPACA_LIVE=true`
+  ([execution_alpaca.py](engine/execution_alpaca.py#L37)). The mode is stored with every order
+  so paper and live records never mix.
+- **Never trade on a made-up number.** Equity is read marked to market from the broker; if it
+  cannot be read, the cycle is skipped and logged instead of falling back to a stale or default
+  value ([orchestrator.py](engine/orchestrator.py#L308)).
+- **Idempotent orders.** Every order carries a client order id that is the primary key of the
+  order log, so retries and repeated syncs cannot duplicate records
+  ([db.py](engine/db.py#L127)).
+- **Protection that survives a crash.** Trailing stops are native broker orders, so they work
+  while the robot is down. Every heartbeat checks that each position is fully covered and
+  replaces missing stops ([`reconcile_stops`](engine/orchestrator.py#L162)). This was added
+  after a real paper-trading incident in which a stop was silently rejected.
+- **Circuit breaker that can recover on its own.** At a 25% drawdown the robot goes to cash.
+  Real equity is flat while in cash, so recovery is measured on the hypothetical value of the
+  basket it sold; when that recovers, the peak is re-anchored and the robot re-enters
+  ([`check_circuit_breaker`](engine/orchestrator.py#L98)).
+- **One robot per account.** A PID-based lock stops two instances from trading the same
+  account and recovers from locks left by a crashed process
+  ([`acquire_lock`](engine/orchestrator.py#L56)).
+- **Nothing optional can stop a cycle.** Logging, order persistence and the AI explanation are
+  wrapped so that their failures are recorded but never interrupt trading
+  ([ai_explain.py](engine/ai_explain.py)).
+- **Auditable state.** SQLite in WAL mode (the dashboard reads while the robot writes), with
+  target weights, orders with their real broker timestamps, equity history, errors and a
+  review queue for events that need a human look ([db/schema.sql](db/schema.sql)).
+
+**Research discipline**
+
+- **Research changed the code.** v9 showed that rebalancing on every change of top-5
+  membership (most trading days) destroyed the result; the fix, a rank hysteresis band,
+  went into the orchestrator ([`hysteresis_target`](engine/orchestrator.py#L226)).
+- **The audit tests the real robot, not a simplification.** The v10 engine replays the
+  orchestrator's rules: next-open execution, intraday stops, stop reset on rebalance, the
+  same hysteresis and sector cap. It then changes one thing, the universe.
+- **Point-in-time data.** Historical index membership, delisted companies included, with
+  masking against reused tickers ([docs/METHODOLOGY.md](docs/METHODOLOGY.md)).
+- **Out-of-sample checks and stated rules.** Walk-forward splits, ETF menus fixed in the code,
+  and a value test whose rules are stated as pre-registered in its docstring.
+- **Refactoring without changing results.** Before this repository was cleaned up for
+  publication, every offline backtest was run with the old and the new code; all 1,386
+  printed metrics matched.
+- **Stopping in time.** The decision to put real money in was conditional on the research.
+  When the audit showed no edge over QQQ, the project stopped at the paper stage.
+
+**Known limitations**
+
+- The tests are smoke tests (plain scripts with offline fakes for the broker and prices), not a
+  unit-test suite, and there is no CI.
+- The split adjustment of Databento prices is a heuristic with known errors, and the v11 ETF
+  backtests start each window without a warm-up period. Both are described above and in the
+  methodology; neither is fixed.
+- The dashboard has no authentication and should only be reachable from trusted addresses.
+- Strategy parameters live in module constants and environment variables rather than a
+  validated configuration object.
+
 ## Architecture
 
 ```
